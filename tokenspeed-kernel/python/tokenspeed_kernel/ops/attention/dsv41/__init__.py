@@ -1273,9 +1273,13 @@ def decode_rows(
         lengths.zero_()
         lengths[:actual_bs].copy_(seq_lens[:actual_bs].clamp_min(width))
         positions.view(bs, width).copy_(
-            lengths.to(torch.int64)[:, None] - width + torch.arange(width)
+            lengths.to(torch.int64)[:, None]
+            - width
+            + torch.arange(width, device=positions.device)
         )
-        requests.view(bs, width).copy_(torch.arange(bs)[:, None])
+        requests.view(bs, width).copy_(
+            torch.arange(bs, device=requests.device)[:, None]
+        )
         for tensor in (positions, requests):
             tensor[: num_extends * width].fill_(-1)
             tensor[actual_bs * width :].fill_(-1)
@@ -1319,7 +1323,9 @@ def decode_window(
             bounded_group_slots,
         )
 
-        wanted = (positions - 127).clamp_min(0)[:, None] + torch.arange(128)
+        wanted = (positions - 127).clamp_min(0)[:, None] + torch.arange(
+            128, device=positions.device
+        )
         wanted.masked_fill_(wanted > positions[:, None], -1)
         slots = bounded_group_slots(
             wanted, requests[:, None].expand_as(wanted), swa_table, 64, 1, 1, swa_pages
@@ -1420,7 +1426,12 @@ def selection_table(positions, requests, table, ratio):
     and int32 visible lengths[N]. ratio is raw tokens per global cache row.
     """
     if not positions.is_cuda:
-        out = torch.full((positions.numel(), table.shape[1]), -1, dtype=torch.int32)
+        out = torch.full(
+            (positions.numel(), table.shape[1]),
+            -1,
+            dtype=torch.int32,
+            device=positions.device,
+        )
         if table.numel():
             values = table[requests.clamp(0, table.shape[0] - 1)]
             out.copy_(
@@ -1473,7 +1484,9 @@ def compressor_metadata(
             & (positions[:-1] == pair_positions[1:])
         )
         previous[1:].copy_(
-            torch.arange(max(positions.numel() - 1, 0)).masked_fill(~in_batch, -1)
+            torch.arange(
+                max(positions.numel() - 1, 0), device=positions.device
+            ).masked_fill(~in_batch, -1)
         )
         read_slots.copy_(
             bounded_group_slots(pair_positions, pair_requests, table, 2, 1, 1, pages)
@@ -1618,7 +1631,9 @@ def index_select_all(page_table, visible_lens, pages, candidate_block_size, out)
             page_table, visible_lens, pages, candidate_block_size, out
         )
     for destination, counts, stride in ((rows, lengths, 1), (blocks, block_lengths, 8)):
-        ids = torch.arange(destination.shape[1], dtype=torch.int32)
+        ids = torch.arange(
+            destination.shape[1], dtype=torch.int32, device=page_table.device
+        )
         offsets = ids * stride
         valid = offsets[None, :] < visible_lens[:, None]
         if page_table.shape[1]:

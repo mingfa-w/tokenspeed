@@ -172,3 +172,13 @@ To invoke the common phase executor directly with a new output directory:
 
 Direct executor invocation does not include the workflow's host lock or deployment checks. Prefer the workflow entry point for acceptance and use an output directory that does not already exist.
 Final acceptance requires real Actions runs demonstrating success, unrelated-change skipping, accuracy failure with performance skipped, and agreement between Actions summaries and VM evidence.
+
+## HCCL compatibility smoke test
+
+The HCCL backend uses `all_gather_into_tensor` and `reduce_scatter_tensor`,
+including with PyTorch 2.9 supplied by the 910B image. Keep the small packed
+INT64 MAX reduction exact by gathering INT32 views before the local maximum.
+On two idle devices, run
+`torchrun --standalone --nproc-per-node=2 test/runtime/distributed/run_ascend_hccl_collectives.py --base-device 8`.
+The test checks rank-ordered gather, reduce-scatter, INT64 keys above 2**53,
+and unequal token row counts against explicit expected tensors.
