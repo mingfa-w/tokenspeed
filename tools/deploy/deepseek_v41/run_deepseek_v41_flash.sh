@@ -83,7 +83,7 @@ log/log_plog         收集服务 / Ascend日志
 evidence             收集各实例逐rank的KV传输证据
 
 build时必须设置NATIVE_MODE=reuse|rebuild；基础环境与模型需事先准备。
-实际abc.txt已被Git忽略，只在通过SSH分发时复制，权限600。
+abc.txt随代码提供，默认读取同目录文件；使用前chmod 600 abc.txt。
 EOF
 }
 # --local仅供远程协调器调用；开发者不需要手动选择节点级入口。

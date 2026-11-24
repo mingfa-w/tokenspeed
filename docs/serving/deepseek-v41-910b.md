@@ -67,18 +67,17 @@ PREFILL_INSTANCES=1 DECODE_INSTANCES=5 RUN_TAG=flash_1p5d \
 
 ### root密码与任一节点启动
 
-参考FluentLLM的 `sshpass -f abc.txt`，入口默认 `SSH_AUTH_MODE=password`、`SSH_USER=root`、`SSH_PORT=8022`。使用入口同目录的 `abc.txt`；可用 `SSH_PASSWORD_FILE` 指定其他绝对路径。文件第一行填写实际root密码：
+参考FluentLLM的 `sshpass -f abc.txt`，入口默认 `SSH_AUTH_MODE=password`、`SSH_USER=root`、`SSH_PORT=8022`。使用入口同目录的 `abc.txt`；可用 `SSH_PASSWORD_FILE` 指定其他绝对路径。代码中已直接提供当前机器使用的root密码文件，无需从FluentLLM目录复制；其他环境可修改文件第一行或通过上述变量覆盖：
 
 ```bash
 cd /home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41
-# 已有密码文件可直接复制，无需在终端命令中输入密码。
-install -m 600 /home/mingfa/code/fluentllm/npu_test/flash26b/abc.txt ./abc.txt
+chmod 600 ./abc.txt  # Git检出后设置本机文件权限
 command -v sshpass  # 缺少时，由管理员通过系统包管理器安装sshpass
 bash run_deepseek_v41_flash.sh preflight
 bash run_deepseek_v41_flash.sh shell
 ```
 
-实际 `abc.txt` 通过Git忽略；仓库提供 `abc.txt.example` 格式示例。`shell`、`code` 和 `start` 将入口、部署依赖、说明文档和权限为600的密码文件分发至每个配置节点的 `$TEST_ROOT/tools_$RUN_TAG`。密码经SSH标准输入写入，不进入命令参数、Git或日志。所有节点须已有 `bash`、`python3`、`sshpass`、基础环境和完整模型；源码模式还要求三个源码目录存在。wheel发布包在 `start` 时校验，缺失时从执行节点复制，因此执行节点须持有发布包，或所有目标节点已具备同一发布包。
+实际 `abc.txt` 已直接纳入代码，与入口位于同一目录，不再提供独立示例文件。`shell`、`code` 和 `start` 将入口、部署依赖、说明文档和权限为600的密码文件分发至每个配置节点的 `$TEST_ROOT/tools_$RUN_TAG`。密码经SSH标准输入写入，不进入命令参数或日志。所有节点须已有 `bash`、`python3`、`sshpass`、基础环境和完整模型；源码模式还要求三个源码目录存在。wheel发布包在 `start` 时校验，缺失时从执行节点复制，因此执行节点须持有发布包，或所有目标节点已具备同一发布包。
 
 完成分发后，在任一配置节点执行以下命令，都由该节点通过root SSH协调完整布局（不局限于启动本机实例）：
 
@@ -130,7 +129,7 @@ bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh start
 | `run_deepseek_v41_flash.sh` | 顶部集中配置；统一完成启停、分发、wheel构建发布、验证和日志收集 |
 | `deployment.py` | 共用一条布局校验和配置生成路径，自动分配设备、端口与网关 |
 
-最少只需这两个文件和自行准备的 `abc.txt`。文档随源码和wheel制品分发；单独复制这两个文件也能执行部署命令。`HOSTS`、P/D数量、运行目录和密码文件是常用配置；端口、显存等调优参数保留环境变量覆盖。P/D合并也使用同一入口，例如单机16设备启动两个合并实例：
+最少只需这两个文件及随代码提供的 `abc.txt`。文档随源码和wheel制品分发；单独复制这两个文件也能执行部署命令。`HOSTS`、P/D数量、运行目录和密码文件是常用配置；端口、显存等调优参数保留环境变量覆盖。P/D合并也使用同一入口，例如单机16设备启动两个合并实例：
 
 ```bash
 SERVING_MODE=merged HOSTS=10.255.76.138 RUN_TAG=flash_merged \
