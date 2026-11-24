@@ -26,11 +26,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 case "${1:-help}" in
     help|-h|--help)
         cat <<'EOF'
-用法：bash run_deepseek_v41_flash.sh plan|start|startp|startd|stop|stopp|stopd|status|log|check
+用法：bash run_deepseek_v41_flash.sh plan|preflight|start|startp|startd|stop|stopp|stopd|status|log|check
 顶部修改PREFILL_INSTANCES、DECODE_INSTANCES及DEVICE_SLOTS即可决定P/D卡数和位置。
 默认2P4D，P用16卡、D用32卡，三台共48卡；每实例TP8/EP8/PP1。
 示例：PREFILL_INSTANCES=1 DECODE_INSTANCES=5 bash run_deepseek_v41_flash.sh plan
-先plan检查，再start启动。SSH密钥或SSH_PASSWORD_FILE需提前准备。
+先preflight检查连接与环境，再start启动。默认使用同目录abc.txt及sshpass。
 EOF
         exit 0 ;;
 esac
@@ -85,7 +85,16 @@ export POOL_PORT_STRIDE="${POOL_PORT_STRIDE:-100}"
 # ==================== SSH ====================
 export SSH_USER="${SSH_USER:-root}"
 export SSH_PORT="${SSH_PORT:-8022}"
-# 默认使用密钥；也可由调用者设置SSH_PASSWORD_FILE，脚本不保存密码。
+export SSH_AUTH_MODE="${SSH_AUTH_MODE:-password}"
+export SSH_HOST_KEY_CHECKING="${SSH_HOST_KEY_CHECKING:-accept-new}"
+# abc.txt第一行存root密码；同目录优先，兼容现有FluentLLM密码文件。
+if [[ "$SSH_AUTH_MODE" == password && -z "${SSH_PASSWORD_FILE:-}" ]]; then
+    if [[ -f "$SCRIPT_DIR/abc.txt" ]]; then
+        export SSH_PASSWORD_FILE="$SCRIPT_DIR/abc.txt"
+    else
+        export SSH_PASSWORD_FILE=/home/mingfa/code/fluentllm/npu_test/flash26b/abc.txt
+    fi
+fi
 
 # ==================== 根据数量生成明确的角色/设备映射 ====================
 [[ "$PREFILL_INSTANCES" =~ ^[1-9][0-9]*$ && "$DECODE_INSTANCES" =~ ^[1-9][0-9]*$ ]] || {

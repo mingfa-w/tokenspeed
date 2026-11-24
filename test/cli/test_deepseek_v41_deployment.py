@@ -227,7 +227,13 @@ def test_role_specific_limits_reach_the_engine(tmp_path, node, prefix):
 
 
 def front_run(
-    tmp_path, action, mode="pd", fail_task="", pools="0,1,2,3,4,5,6,7", layout=None
+    tmp_path,
+    action,
+    mode="pd",
+    fail_task="",
+    pools="0,1,2,3,4,5,6,7",
+    layout=None,
+    extra_env=None,
 ):
     commands = tmp_path / "network"
     commands.mkdir()
@@ -246,6 +252,14 @@ def front_run(
         exe = commands / name
         exe.write_text(script)
         exe.chmod(0o755)
+    password_runner = commands / "sshpass"
+    password_runner.write_text(
+        "#!/usr/bin/env python3\nimport os,sys\n"
+        "assert sys.argv[1]=='-f'\n"
+        "assert open(sys.argv[2]).read().strip()=='test-password'\n"
+        "os.execvp(sys.argv[3], sys.argv[3:])\n"
+    )
+    password_runner.chmod(0o755)
     ips = "192.0.2.1\n192.0.2.2\n192.0.2.3" if mode == "pd" else "192.0.2.1"
     env = dict(
         os.environ,
@@ -274,6 +288,7 @@ def front_run(
         env.pop("DEVICE_POOLS", None)
         env["PD_LAYOUT"] = json.dumps(layout)
         env["REQUIRE_FULL_NODE"] = "1"
+    env.update(extra_env or {})
     result = subprocess.run(
         ["bash", str(ROOT / "tools/deploy/deepseek_v41/deploy_pd.sh"), action],
         env=env,
@@ -639,3 +654,50 @@ def test_flexible_merged_layout_and_json_schema_validation():
     for malformed in [{}, {"instances": "bad"}, {"instances": [{"id": "x"}]}]:
         with pytest.raises(ValueError):
             LAYOUT.normalize(dict(SERVING_MODE="pd"), malformed)
+
+
+@pytest.mark.parametrize("action", ["preflight", "shell", "start"])
+def test_password_auth_coordinates_all_configured_hosts(tmp_path, action):
+    password = tmp_path / "password with spaces.txt"
+    password.write_text("test-password\n")
+    result, calls = front_run(
+        tmp_path,
+        action,
+        extra_env=dict(SSH_AUTH_MODE="password", SSH_PASSWORD_FILE=str(password)),
+    )
+    assert result.returncode == 0, result.stderr
+    assert {c["target"].split(":")[0] for c in calls} == {
+        "root@192.0.2.1",
+        "root@192.0.2.2",
+        "root@192.0.2.3",
+    }
+    assert "test-password" not in result.stdout + result.stderr
+    if action == "preflight":
+        assert not any(c["kind"] == "scp" for c in calls)
+    else:
+        writes = [
+            c for c in calls if c["tokens"] and c["tokens"][-1].endswith("/abc.txt")
+        ]
+        assert len(writes) == 3
+
+
+def test_missing_password_aborts_before_remote_operations(tmp_path):
+    result, calls = front_run(
+        tmp_path,
+        "start",
+        extra_env=dict(
+            SSH_AUTH_MODE="password", SSH_PASSWORD_FILE=str(tmp_path / "absent")
+        ),
+    )
+    assert result.returncode != 0
+    assert not calls
+
+
+def test_key_mode_ignores_password_file(tmp_path):
+    result, calls = front_run(
+        tmp_path,
+        "shell",
+        extra_env=dict(SSH_AUTH_MODE="key", SSH_PASSWORD_FILE=str(tmp_path / "absent")),
+    )
+    assert result.returncode == 0, result.stderr
+    assert not any(c["tokens"] and c["tokens"][-1].endswith("/abc.txt") for c in calls)

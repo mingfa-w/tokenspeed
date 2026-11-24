@@ -29,6 +29,7 @@ usage() {
 布局每行：实例ID prefill|decode|regular 主机IP 逗号分隔的8个设备ID
 可用PD_LAYOUT_FILE读取同格式文件或JSON；PD模式至少1P1D，可同机混合P/D。
 
+preflight            检查所有节点SSH、基础环境、模型和协调工具，不启动服务
 plan                 校验并打印实例、P/D卡数、端口和网关规划，不连接远端
 start/startp/startd   全部/仅Prefill/仅Decode准备并启动；start最后执行真实生成
 stop/stopp/stopd      全部/仅Prefill/仅Decode停止；同机其他实例不受影响
@@ -133,10 +134,15 @@ for desired in prefill regular decode; do
         if [[ "$index" != "$gateway_index" && "${roles[$index]}" == "$desired" ]]; then ordered+=("$index"); fi
     done
 done
-ssh_cmd=(ssh -p "$SSH_PORT"); scp_cmd=(scp -P "$SSH_PORT")
-if [[ "$action" != plan && -n "${SSH_PASSWORD_FILE:-}" ]]; then
-    [[ -r "$SSH_PASSWORD_FILE" ]] || fail 'SSH_PASSWORD_FILE不可读'
-    command -v sshpass >/dev/null || fail '密码文件方式需要sshpass'
+SSH_AUTH_MODE="${SSH_AUTH_MODE:-$([[ -n "${SSH_PASSWORD_FILE:-}" ]] && echo password || echo key)}"
+SSH_HOST_KEY_CHECKING="${SSH_HOST_KEY_CHECKING:-accept-new}"
+case "$SSH_AUTH_MODE" in password|key) ;; *) fail 'SSH_AUTH_MODE必须为password或key' ;; esac
+case "$SSH_HOST_KEY_CHECKING" in yes|accept-new|no) ;; *) fail 'SSH_HOST_KEY_CHECKING必须为yes、accept-new或no' ;; esac
+ssh_cmd=(ssh -p "$SSH_PORT" -o "StrictHostKeyChecking=$SSH_HOST_KEY_CHECKING" -o ConnectTimeout=15)
+scp_cmd=(scp -P "$SSH_PORT" -o "StrictHostKeyChecking=$SSH_HOST_KEY_CHECKING" -o ConnectTimeout=15)
+if [[ "$action" != plan && "$SSH_AUTH_MODE" == password ]]; then
+    [[ -r "${SSH_PASSWORD_FILE:-}" && -s "$SSH_PASSWORD_FILE" ]] || fail 'SSH_PASSWORD_FILE必须为可读且非空的密码文件'
+    command -v sshpass >/dev/null || fail '密码文件方式需要sshpass（系统包：sshpass）'
     ssh_cmd=(sshpass -f "$SSH_PASSWORD_FILE" "${ssh_cmd[@]}")
     scp_cmd=(sshpass -f "$SSH_PASSWORD_FILE" "${scp_cmd[@]}")
 else
@@ -169,8 +175,12 @@ stage_tools() {
     local node="$1" guide="$SCRIPT_DIR/../../../docs/serving/deepseek-v41-910b.md"
     [[ -f "$guide" ]] || guide="$SCRIPT_DIR/DEPLOYMENT.md"
     remote "$node" mkdir -p "$REMOTE_TOOLS"
-    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$SSH_USER@$node:$REMOTE_TOOLS/"
+    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$SCRIPT_DIR/run_deepseek_v41_flash.sh" "$SSH_USER@$node:$REMOTE_TOOLS/"
     "${scp_cmd[@]}" "$guide" "$SSH_USER@$node:$REMOTE_TOOLS/DEPLOYMENT.md"
+    if [[ "$SSH_AUTH_MODE" == password ]]; then
+        # 输送到stdin，避免密码出现在命令参数或日志中；创建时即限制权限。
+        remote "$node" bash -c 'set -e; umask 077; temporary=$(mktemp "$1.tmp.XXXXXX"); trap '"'"'rm -f "$temporary"'"'"' EXIT; cat > "$temporary"; chmod 600 "$temporary"; mv -f "$temporary" "$1"; trap - EXIT' bash "$REMOTE_TOOLS/abc.txt" < "$SSH_PASSWORD_FILE"
+    fi
 }
 stage_release() {
     local node="$1" status=0 index
@@ -184,13 +194,34 @@ stage_release() {
         if [[ "${instance_nodes[$index]}" == "$node" ]]; then run_instance "$index" check-release; break; fi
     done
 }
+preflight() {
+    local node
+    for node in "${selected_nodes[@]}"; do
+        remote "$node" bash -c '
+            set -eu
+            command -v bash >/dev/null
+            command -v python3 >/dev/null
+            if [ "$1" = password ]; then command -v sshpass >/dev/null; fi
+            test -r "$2/runtime/env.sh"
+            test -d "$3"
+            if [ "$4" = source ]; then
+                test -d "$5/python/tokenspeed"
+                test -d "$6"
+                test -d "$7"
+            fi
+            printf "preflight OK: %s\n" "$8"
+        ' bash "$SSH_AUTH_MODE" "$BASE_ROOT" "$MODEL_PATH" "$CODE_MODE" "$TS_SRC" "$UNI_SRC" "$PLUGIN_SRC" "$node"
+    done
+}
 case "$action" in
+    preflight) preflight ;;
     plan)
         printf 'tag=%s root=%s\n' "$RUN_TAG" "$BASE_PD_ROOT"
         python3 "$SCRIPT_DIR/pd_layout.py" summary "$plan_file" ;;
     shell|code)
         for node in "${selected_nodes[@]}"; do stage_tools "$node"; [[ "$action" != code ]] || stage_release "$node"; done ;;
     start|startp|startd)
+        preflight
         for node in "${selected_nodes[@]}"; do stage_tools "$node"; stage_release "$node"; done
         for index in "${selected[@]}"; do run_instance "$index" prepare; done
         for index in "${ordered[@]}"; do run_instance "$index" start; done

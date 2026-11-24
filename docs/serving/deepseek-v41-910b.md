@@ -36,6 +36,7 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 
 ```bash
 bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh preflight
 bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh start
 bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh status
 bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh log
@@ -64,7 +65,34 @@ PREFILL_INSTANCES=1 DECODE_INSTANCES=5 RUN_TAG=flash_1p5d \
 # 确认规划后，将plan改为start。
 ```
 
-默认采用SSH密钥及主机身份校验；密码认证可设置 `SSH_PASSWORD_FILE` 并准备 `sshpass`。密码文件由使用者自行创建并限制权限，不写入脚本、仓库或日志。
+### root密码与任一节点启动
+
+参考FluentLLM的 `sshpass -f abc.txt`，入口默认 `SSH_AUTH_MODE=password`、`SSH_USER=root`、`SSH_PORT=8022`。优先使用入口同目录的 `abc.txt`，未找到时兼容 `/home/mingfa/code/fluentllm/npu_test/flash26b/abc.txt`；可用 `SSH_PASSWORD_FILE` 指定其他绝对路径。文件第一行填写实际root密码：
+
+```bash
+cd /home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41
+# 已有密码文件可直接复制，无需在终端命令中输入密码。
+install -m 600 /home/mingfa/code/fluentllm/npu_test/flash26b/abc.txt ./abc.txt
+command -v sshpass  # 缺少时，由管理员通过系统包管理器安装sshpass
+bash run_deepseek_v41_flash.sh preflight
+bash run_deepseek_v41_flash.sh shell
+```
+
+实际 `abc.txt` 通过Git忽略；仓库提供 `abc.txt.example` 格式示例。`shell`、`code` 和 `start` 将入口、部署依赖、说明文档和权限为600的密码文件分发至每个配置节点的 `$TEST_ROOT/tools_$RUN_TAG`。密码经SSH标准输入写入，不进入命令参数、Git或日志。所有节点须已有 `bash`、`python3`、`sshpass`、基础环境和完整模型；源码模式还要求三个源码目录存在。wheel发布包在 `start` 时校验，缺失时从执行节点复制，因此执行节点须持有发布包，或所有目标节点已具备同一发布包。
+
+完成分发后，在任一配置节点执行以下命令，都由该节点通过root SSH协调完整布局（不局限于启动本机实例）：
+
+```bash
+cd /workdir/deepseek-v41-test/tools_dsv41_flash_dev
+bash run_deepseek_v41_flash.sh preflight
+bash run_deepseek_v41_flash.sh start
+bash run_deepseek_v41_flash.sh status
+bash run_deepseek_v41_flash.sh check
+```
+
+路径随 `TEST_ROOT` / `RUN_TAG` 改变；使用非默认配置时，在各协调节点设置相同环境变量，或将共同配置写进入口顶部后重新执行 `shell` 分发。首次连接采用 `StrictHostKeyChecking=accept-new`，后续主机密钥变更会拒绝连接。需要已预置known_hosts时设 `SSH_HOST_KEY_CHECKING=yes`；参考脚本式关闭校验可显式设 `SSH_HOST_KEY_CHECKING=no`。密钥认证设置 `SSH_AUTH_MODE=key`，不会使用或分发密码文件。
+
+`preflight` 仅检查连接和路径；`start` 会先检查全部节点，再分发、准备和依次启动实例，最后执行真实生成验收。检查通过不等于完整模型服务已验收。
 
 ## 显式配置任意P/D放置
 
