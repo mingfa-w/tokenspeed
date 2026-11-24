@@ -1,32 +1,120 @@
-# DeepSeek V4.1 Flash 在 Ascend 910B 上的开发部署
+# DeepSeek V4.1 Flash：910B 部署、开发与验证
 
-[部署脚本](../../tools/deploy/deepseek_v41/deploy_pd.sh)支持单机 P/D 合并部署（`SERVING_MODE=merged`）和三节点 1P2D 部署（`SERVING_MODE=pd`），两者均使用标准 headless 引擎与 SMG 网关。
+统一入口为 `tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh`。支持按实例数量生成P/D布局，或使用显式布局配置同机混合P/D。每个实例保持TP8/EP8/PP1，当前三台机器默认2P4D、共48个设备。
 
-本方案适用于 TP8/EP8、eager、纯文本测试和开发。脚本依赖已准备好的基础运行环境与模型，不负责安装裸机系统。PD 是否提升吞吐，需要使用实际负载单独验证。
+## 代码、实例与镜像
 
-## 先区分源码目录与部署目录
+| 组件 | 代码链接 | 分支 | 已验证运行基线 |
+|---|---|---|---|
+| Tokenspeed | [仓库](https://github.com/mingfa-w/tokenspeed) | `uni-ops/dpk-flash-v41` | `913449a39227d95c43525235a5643c5d0a566215` |
+| uni-ops | [仓库](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/list) | `deepseek-v4.1-flash` | `25e26b43242df67dacf5821d5b73090ba90f8978` |
+| ts-plugin | [仓库](https://dev.sankuai.com/code/repo-detail/mptech-llmp/ts-plugin/file/list) | `deepseek-v4.1-flash` | `b22ddb94b7cb35132fd0301303c086ab87912472` |
 
-Tokenspeed 源码仓库中没有预置的 `runtime/env.sh`。本文有两个**部署时生成**的环境文件：
+Tokenspeed运行代码基线与部署工具版本分开记录：工具版本使用当前检出分支的 `git rev-parse HEAD`，wheel来源使用发布包中的 `build-info.json`。ts-plugin发行包名为 `tokenspeed-longcat`，uni-ops发行包名为 `mt-uni-ops`。
 
-| 文件 | 何时生成 | 用途 |
-|---|---|---|
-| `$BASE_ROOT/runtime/env.sh` | 按“环境准备”步骤 3 的 `cat > ...` 命令创建 | 激活基础 venv，配置 CANN、驱动和 SHMEM |
-| `$PD_ROOT/runtime/env.sh` | 执行 `deploy_pd.sh install` 或首次 `up` 时自动生成 | 在基础环境上激活当前部署 venv，设置设备、模型和源码路径 |
+获取源码时使用相应分支：
 
-`TS_SRC` 是 Tokenspeed 源码目录；`BASE_ROOT` 和 `PD_ROOT` 是源码目录之外的部署目录。不要在 `$TS_SRC/runtime/` 中寻找这些文件。首次搭建从下文“环境准备”开始，完成步骤 3 后才能 `source "$BASE_ROOT/runtime/env.sh"`；执行部署安装后才能 `source "$PD_ROOT/runtime/env.sh"`。
+```bash
+export CODE_ROOT=/home/mingfa/code
+mkdir -p "$CODE_ROOT"
+git clone --branch uni-ops/dpk-flash-v41 --single-branch https://github.com/mingfa-w/tokenspeed.git "$CODE_ROOT/tokenspeed"
+git clone --branch deepseek-v4.1-flash --single-branch ssh://git@git.sankuai.com/mptech-llmp/uni-ops.git "$CODE_ROOT/uni-ops"
+git clone --branch deepseek-v4.1-flash --single-branch ssh://git@git.sankuai.com/mptech-llmp/ts-plugin.git "$CODE_ROOT/ts-plugin"
+```
+
+当前参考实例：[MLP psxbwxrtsp7nea](https://mlp.sankuai.com/ml/#/run/detail?jobId=psxbwxrtsp7nea&tab=implement)。使用镜像：
+
+```text
+registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficient-llm/serving_tokenspeed_npu_3b_custom_20261103_ts_f8cb94a1b_ops_f600e37fd_fix01_3d7e4906:1.0.2
+```
+
+当前目标节点为10.255.76.138、10.255.111.50、10.255.170.42，SSH端口已验证为8022。新实例仍需检查镜像中的软件版本，不应仅凭镜像名称判断兼容性。
+
+## 一键部署
+
+先按后文准备基础环境、完整模型、wheel发布包和SSH认证。在控制机修改入口顶部的目录、IP和参数；在Tokenspeed仓库根目录执行：
+
+```bash
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh start
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh status
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh log
+bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh stop
+```
+
+交付包根目录也提供同名入口，执行时去掉 `tools/deploy/deepseek_v41/` 前缀。配置区的主要参数：
+
+| 参数 | 含义 |
+|---|---|
+| `PREFILL_INSTANCES` / `DECODE_INSTANCES` | P/D实例数，各实例8设备；默认2/4，即16卡P＋32卡D |
+| `DEVICE_SLOTS` | 按顺序列出“IP\|设备组”；前PREFILL_INSTANCES组做P，其余做D |
+| `RUN_TAG` / `TEST_ROOT` | 本次任务标记和远端工作根目录 |
+| `MODEL_PATH` / `BASE_ROOT` / `RELEASE_ROOT` | 模型、基础环境、wheel发布包路径 |
+| `CODE_MODE` | `wheel`导入安装包；`source`加载三个本地源码树并启用开发热重载 |
+| `PREFILL_MEM_FRACTION` / `DECODE_MEM_FRACTION` | P/D显存比例，默认均0.85 |
+| `PREFILL_MAX_NUM_SEQS` / `DECODE_MAX_NUM_SEQS` | 每实例并发，默认均1 |
+| `MAX_MODEL_LEN` / `MAX_TOTAL_TOKENS` / `CHUNKED_PREFILL_SIZE` | 默认512/1024/512，增大后需重新验收 |
+| `SSH_USER` / `SSH_PORT` | 默认root/8022 |
+
+例如改为1P5D并使用新任务目录：
+
+```bash
+PREFILL_INSTANCES=1 DECODE_INSTANCES=5 RUN_TAG=flash_1p5d \
+  bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
+# 确认规划后，将plan改为start。
+```
+
+默认采用SSH密钥及主机身份校验；密码认证可设置 `SSH_PASSWORD_FILE` 并准备 `sshpass`。密码文件由使用者自行创建并限制权限，不写入脚本、仓库或日志。
+
+## 显式配置任意P/D放置
+
+需要逐实例决定位置时，直接使用 `deploy_pd.sh`，不要同时使用上述自动生成布局的入口。每行格式为 `实例ID 角色 IP 设备组`：
+
+```bash
+export SERVING_MODE=pd CODE_MODE=wheel
+unset DS_IPLIST DEVICE_POOLS PD_LAYOUT_FILE
+export PD_LAYOUT='
+p0 prefill 10.255.76.138 0,1,2,3,4,5,6,7
+d0 decode  10.255.76.138 8,9,10,11,12,13,14,15
+p1 prefill 10.255.111.50 0,1,2,3,4,5,6,7
+d1 decode  10.255.111.50 8,9,10,11,12,13,14,15
+p2 prefill 10.255.170.42 0,1,2,3,4,5,6,7
+d2 decode  10.255.170.42 8,9,10,11,12,13,14,15
+'
+export RUN_TAG=flash_3p3d
+# 还需设置BASE_ROOT、MODEL_PATH、RELEASE_ROOT、SSH等环境变量。
+bash tools/deploy/deepseek_v41/deploy_pd.sh plan
+bash tools/deploy/deepseek_v41/deploy_pd.sh start
+```
+
+这份配置为每台1P＋1D，共3P3D。P卡数=`prefill行数×8`，D卡数=`decode行数×8`。同样可配置1P5D、2P4D，或更多主机。合并模式使用 `SERVING_MODE=merged`，各行角色改为 `regular`。
+
+也可以把行内容保存到本地文件，用 `PD_LAYOUT_FILE=/path/to/my.layout` 读取，并先取消 `PD_LAYOUT`。文件还支持JSON实例列表，或 `{"instances":[...]}`；每个实例包含 `id/role/node/devices`，devices为逗号分隔字符串或数字列表。文件作为数据解析，不执行shell命令或变量展开。
+
+显式布局默认 `REQUIRE_FULL_NODE=1`，要求每台被引用机器的0–15设备完整分配且无重叠。明确进行部分设备测试时，可设置为0。每实例必须使用0–7或8–15完整HCCS组。实例ID唯一，修改布局后使用新的RUN_TAG/PD_ROOT。
+
+## 工具组成与环境文件
+
+只保留一个配置入口和四个执行依赖，分发时不能遗漏：
+
+| 文件 | 用途 |
+|---|---|
+| `run_deepseek_v41_flash.sh` | 当前机器配置、实例数量与一键入口 |
+| `deploy_pd.sh` | 批量分发、按角色启停、状态及日志收集 |
+| `deploy_runtime.sh` | 单实例安装、wheel构建发布、Supervisor与真实生成检查 |
+| `configure.py` | 生成各实例的启动命令、环境和进程配置 |
+| `pd_layout.py` | 布局校验、卡数统计、端口与网关分配 |
+
+源码没有预置的 `runtime/env.sh`：
+
+- `$BASE_ROOT/runtime/env.sh`：按下文环境准备步骤3创建，负责基础venv及CANN/SHMEM。
+- `$PD_ROOT/<实例ID>/runtime/env.sh`：由部署器安装该实例时生成，负责设备、模型和源码路径。
+
+默认任务目录为 `$TEST_ROOT/run_$RUN_TAG/<实例ID>/`，根目录可用 `PD_ROOT` 覆盖。先生成文件，再执行source，不要在Tokenspeed源码的runtime目录寻找它们。
 
 ## 环境准备
 
-每个节点需要 Linux x86_64、Python 3.11、八个空闲的 64 GiB 910B 设备、完整本地模型（包括 Engram 表和 tokenizer），以及已验证的 Ascend 基础运行环境。用 `BASE_ROOT` 指定该环境，其目录必须包含：
-
-- `venv`：按下文步骤创建，并安装或继承经过版本核对的 Torch/TorchNPU、Tokenspeed engine/kernel/scheduler、SMG、Supervisor 和 Ascend Mooncake。
-- `runtime/env.sh`：在下文步骤 3 中创建，用于激活基础 venv，并设置 CANN、驱动和 SHMEM 动态库路径。
-- `runtime/guard/sitecustomize.py`：拦截旧算子库导入。
-- `env.sh` 引用的 SHMEM 库，以及匹配的 CANN 安装。
-
-参考软件组合为 CANN 9.0、Torch 2.9.0、TorchNPU 2.9.0、Tokenspeed 0.1.1、engine 0.1.0、scheduler 0.1.57、kernel-npu 0.1.0、SMG 1.16.0 和 Mooncake NPU 0.3.13。构建环境的**完整版本号**保存在 `build-info.json` 中，安装时会逐项检查。普通 CUDA Mooncake wheel 不能替代 NPU 版本；native wheel 还必须匹配 Python、机器架构、Torch ABI 和 CANN。
-
-安装过程会创建新的 venv，通过 `.pth` 文件读取基础 venv 的依赖，新环境中安装的 wheel 优先。必须保留基础环境，不要删除、移动或原地升级它。这种方式避免直接复制 venv 后残留旧 shebang；若需完全独立的运行包，应另行导出全部依赖并验证。
+每个节点需要Linux x86_64、Python 3.11、完整本地模型（包括Engram表和tokenizer）、CANN/驱动及匹配的NPU软件栈。当前配方为eager、纯文本、numerics=auto、greedy。以下步骤创建独立的基础venv，部署实例再以只读方式继承其依赖。
 
 ### 1. 明确基础镜像与安装材料
 
@@ -222,154 +310,104 @@ cat "$BASE_ROOT/runtime/base-pip-check.txt"
 
 `pip check` 的非零结果必须核对，不能直接忽略。已验收镜像中存在需要记录的元数据例外：Tokenspeed 声明的 `tokenspeed-mooncake` 依赖与实际使用的 NPU 替代发行包不同；Triton-Ascend 的 pytest 固定版本与测试环境可能不同；镜像中的 TorchAir 还可能与 protobuf 版本冲突。保留参考环境和新环境的检查输出，逐项确认。不能为清除第一项提示而安装 CUDA Mooncake；TorchAir 相关图编译路径也不在本 eager 方案的验收范围内。新增冲突或导入失败应先解决，再启动模型。
 
-最后在空闲设备上执行部署后的 `smoke`，确认模型加载和真实生成；仅导入通过不能证明服务通过验收。基础环境准备完成后，继续下文的 wheel 构建、发布和部署步骤。
+最后在空闲设备上执行部署后的 `smoke`，确认模型加载和真实生成；仅导入通过不能证明服务通过验收。基础环境准备完成后，继续下文的wheel构建与部署。
 
 本章的基础镜像继承流程已在新目录实际执行，版本、ABI、导入和命令入口检查通过；新环境的 `pip check` 输出与参考环境一致，保留了上述三类例外。普通 Python 的独立环境路径未在本次验证中执行。本次环境搭建检查未启动模型或修改在线服务。
 
-## 构建与发布 wheel
+## 构建与发布wheel
 
-在软件栈匹配的 Ascend 构建机上执行，依赖安装必须在 venv 中进行。只有 Python 改动时，可以复用已编译的 dav-2201 算子；需要重新编译 native 算子时，选择 `NATIVE_MODE=rebuild`，构建在独立暂存目录中进行。
+在匹配的构建机上执行，依赖安装必须在venv中。源代码树须无未提交的已跟踪修改：
 
 ```bash
-: "${BASE_ROOT:?请先完成上文环境准备并设置 BASE_ROOT}"
-test -f "$BASE_ROOT/runtime/env.sh"
 source "$BASE_ROOT/runtime/env.sh"
-export TS_SRC=/path/to/tokenspeed
-export UNI_SRC=/path/to/uni-ops
-export PLUGIN_SRC=/path/to/ts-plugin
+export TS_SRC=/home/mingfa/code/tokenspeed
+export UNI_SRC=/home/mingfa/code/uni-ops
+export PLUGIN_SRC=/home/mingfa/code/ts-plugin
 export RELEASE_ID=deepseek-v41-dev
 export BUILD_ROOT=/workdir/build-$RELEASE_ID
 export RELEASE_ROOT=/workdir/releases/$RELEASE_ID
 NATIVE_MODE=reuse bash "$TS_SRC/tools/deploy/deepseek_v41/deploy_pd.sh" build
 bash "$TS_SRC/tools/deploy/deepseek_v41/deploy_pd.sh" publish
+bash "$TS_SRC/tools/deploy/deepseek_v41/deploy_pd.sh" check-release
 ```
 
-源码树中不能有未提交的已跟踪文件修改。构建需要 `build`、`wheel` 和 setuptools >=77；重新编译 native 算子还需要 CANN SDK、CMake 和编译器。脚本不会自动下载或升级这些依赖。
+`reuse`打包源码树现有dav-2201 native产物并记录哈希；需要重编译则选 `NATIVE_MODE=rebuild`，在隔离暂存目录运行AscendC构建。构建需要build、wheel、setuptools>=77；重编译还需CANN SDK、CMake和编译器，脚本不自动升级它们。
 
-发布包包含 `mt-uni-ops`、`tokenspeed-longcat`（ts-plugin 的发行包名）、已验证的 Tokenspeed Python wheel，以及源码提交号、native 文件哈希、SHA256 清单、部署脚本和回归测试。两个依赖 wheel 的版本后缀为 `.post0+g<commit>`，不会修改原源码树的版本文件。复用缓存的 Tokenspeed Python wheel 前，会将其中代码与源码树比较；其 native 依赖仍由基础环境提供。
+发布目录含两个新依赖wheel、已验证Tokenspeed Python wheel、五个部署工具、本文、版本及SHA256清单。依赖wheel使用 `.post0+g<commit>` 版本，不改原检出目录。Tokenspeed Python wheel与源码逐文件比对后复用；engine/kernel/scheduler由基础环境提供。先安装其他包，最后安装Triton-Ascend，不能事后单独重装上游Triton。
 
-`publish` 创建新的文件制品目录并生成校验清单，拒绝覆盖已有目录。将**整个发布目录**复制到各节点，然后在节点上校验：
+publish采用暂存目录后重命名，拒绝覆盖已有release。整个发布目录需在控制机可读；start会校验远端已有目录，缺失时从控制机分发。它不会复制模型、基础环境或源码。source模式的三个源码路径需在各节点准备好并保持一致。
+
+若需上传包仓库，首次publish时显式提供 `TWINE_REPOSITORY_URL`，凭据由环境或凭据管理器提供；仓库需支持PEP440本地版本。该动作只上传uni-ops和ts-plugin。上传失败保留文件制品，可用 `python -m twine upload` 重试，不覆盖release。文件发布本身不等于上传公共PyPI。
+
+## 启停、端口与验收
+
+通用批量入口的动作如下，自动配置入口也会透传这些动作：
+
+| 命令 | 行为 |
+|---|---|
+| `plan` | 离线校验并显示各角色卡数、设备、端口和网关 |
+| `start` | 分发工具及缺失的release，全部准备完成后先启动网关归属实例，再其他P，最后D；执行真实生成检查 |
+| `startp/startd` | 只准备并启动对应角色，不等待另一角色就绪 |
+| `stop/stopp/stopd` | 按启动逆序停止全部/P/D实例，不操作其他任务 |
+| `status` | 查看全部实例Supervisor状态 |
+| `check/smoke-remote` | 通过网关执行完整/快速真实生成检查 |
+| `evidence-remote` | 收集每实例KV传输和请求完成事件 |
+| `shell/code` | 分发工具/工具及wheel发布包，不替换源码或覆盖已有release |
+| `log/log_plog` | 按主机收集服务及验收日志/Ascend日志 |
+
+默认网关归属第一个P，合并模式归属第一个regular，可用 `GATEWAY_INSTANCE` 指定。只启动一个SMG，统一注册全部实例。停止网关归属实例时，其网关也会停止，同机其他实例的Supervisor不受影响。
+
+默认HTTP8010、引擎8120、引擎metrics8121、网关metrics8122、rendezvous9600、P bootstrap8998。同机第二实例的本地端口偏移 `POOL_PORT_STRIDE=100`；握手端口从9010按布局全局顺序分配，六实例即9010–9015，全部绑定在网关主机。启动前检查设备和TCP端口，包含非LISTEN连接及rendezvous派生端口。Mooncake/ZMQ还需节点间数据面连接互通，使用可信内网。
+
+部署器保存布局指纹。复用已安装实例时核对布局、模型、设备和角色参数，避免混用新旧配置。不同目录不自动避让设备和端口。
+
+smoke要求实际角色数量的worker均ready/healthy，并检查一次真实问答；check执行六条顺序和两条并发请求，检查HTTP200、预期文本与stop结束原因。原始请求/响应保存在各实例validation目录，不能仅凭RUNNING或/workers判定通过。
+
+PD还需按本次请求ID/时间对齐所有P/D日志，确认全部Decode实际接收请求，逐rank记录 `ts_decode_kv_transfer_success`、`ts_request_finished`，并确认 `ascend_direct`。固定八条问答不保证覆盖任意规模的全部worker，应补充请求直至覆盖。日志收集器不把历史成功记录当作当前验收。
+
+本地日志位于 `${LOCAL_LOG_ROOT:-$PWD/logs/deepseek-v41}/$RUN_TAG/`，每主机一个包，包含各实例日志、validation和node.json；Ascend日志在实例ascend-log目录。
+
+## 源码开发
+
+设置 `CODE_MODE=source`，提供TS_SRC、UNI_SRC、PLUGIN_SRC。部署venv中的命令入口仍来自wheel，三个源码树放到PYTHONPATH前部，并启用allow-reload-forward与网关开发控制API。
+
+在网关归属节点激活该实例的环境后执行：
 
 ```bash
-RELEASE_ROOT=/path/to/release bash tools/deploy/deepseek_v41/deploy_pd.sh check-release
+source /path/to/run_tag/p0/runtime/env.sh
+# 修改受支持的模型/forward模块后执行。
+GATEWAY_URL="$(python -c 'import json,os; d=json.load(open(os.environ["TS_RUNTIME_DIR"]+"/node.json")); print("http://"+d["gateway_host"]+":"+str(d["http_port"]))')"
+ts reload-forward --url "$GATEWAY_URL"
 ```
 
-如需上传包仓库，可在首次 `publish` 时显式设置 `TWINE_REPOSITORY_URL`，仅上传两个依赖 wheel。凭据应由环境变量或凭据管理工具提供，包仓库必须支持 PEP440 本地版本号。上传失败后文件制品仍会保留，使用 `python -m twine upload` 重试，不要覆盖原发布目录。发布文件制品不会自动上传公共包仓库。
+支持范围见[forward热重载](../guides/forward-reload.md)。检查重载返回的模块报告；native库及不支持热重载的插件修改应重新构建或重启。PD各节点源码应一致，迭代结束后在新启动的实例上验收。source模式仅用于开发网络。
 
-## 单机 P/D 合并模式：一键启动
+## 910B布局依据
 
-在已准备好的测试节点上使用 root shell。将以下配置保存在 Git 仓库之外的本地文件中，按实际环境修改路径和本机地址：
+主要参考 `/home/mingfa/code/fluentllm/npu_test/flash26b/run_26b_pp.sh`。已读取其配置：hidden6144、路由专家512、专家中间维度2048；DeepSeek分别为5120、384、2304，二者均64个attention heads。其有权重路由专家参数量估算约541.17B，与DeepSeek约543.58B接近；参考配置的identity专家不计入权重。不能把该W8A8 checkpoint的PP/显存参数直接套用于DeepSeek的MXFP4路径。
 
-```bash
-export BASE_ROOT=/path/to/validated-runtime
-export RELEASE_ROOT=/path/to/release
-export MODEL_PATH=/models/DeepSeek-V4.1-Flash
-export PD_ROOT=/workdir/deepseek-v41-merged-dev
-export NODE_IP=192.0.2.10  # 文档示例地址，必须替换成本机实际 IP
-export SERVING_MODE=merged
-export CODE_MODE=wheel
-export DEVICES=0,1,2,3,4,5,6,7
-```
+三台目标机器均实测为两个HCCS八设备组：0–7与8–15。组间为PIX/PHB/SYS路径，不是16设备统一HCCS。
 
-加载上述环境变量后，在 Tokenspeed 仓库根目录执行：
+- DeepSeek主模型40层路由专家权重及scale共268.945GiB；EP4每设备仅此项就67.236GiB，超过64GiB。
+- EP8每设备约33.618GiB，已有TP8运行验证；还需保留其他权重、KV和临时张量空间。
+- TP16不满足当前o_groups=8的head TP整除限制；TP8＋DP2＋EP16不满足当前attention TP等于MoE TP×EP的约束。
+- TP8＋DP2＋EP8的离线mapping可行，但没有消除权重复制，尚需验证NPU多DP路径。当前V4.1模型也明确要求PP1。
 
-```bash
-bash tools/deploy/deepseek_v41/deploy_pd.sh up
-```
+因此测试开发与稳定性优先时，以六个独立TP8/EP8/PP1实例作为48设备基线，2P4D是初始比例，不是吞吐最优的实测结论。P/D比例由负载决定，配置支持调整。所有设备被分配也不等于低并发时计算核心持续满载。
 
-`up` 在需要时安装新环境，启动引擎和网关，等待一个普通 worker 达到 ready/healthy，然后执行真实的 `1+1` 生成检查。仅有 Supervisor 的 RUNNING 状态不会被视为启动成功。也可以用 `install` 单独完成安装。就绪检查失败时会保留日志和进程，方便排查，不会停止其他部署。
+三台主机均约2TiB内存；Engram表约188.83GiB/完整副本，双实例逻辑表约377.67GiB，仍需检查实测RSS、共享映射和NUMA。当前保持512上下文和每引擎并发1；扩大参数、启用其他数值模式前另行验证。算术FP4解码在已测MoE场景增加约450MiB临时张量峰值，不应把显存比例硬设为1.0。
 
-默认 HTTP 端口为 8010。如果要与其他实例同时运行，必须在**安装之前**选择新的 `PD_ROOT`、空闲设备，以及未占用的 `HTTP_PORT`、`ENGINE_PORT`、`METRICS_PORT`、`GATEWAY_METRICS_PORT`、`HANDSHAKE_PORT` 和 `DIST_PORT`。
+## 切换、回退与检查
 
-生成的配置会持久保存；修改配置时，应先停止旧环境，再安装到新目录。`up` 不会重写已有配置。启动检查会拒绝占用中的设备和本机 TCP 端口，也会检查非 LISTEN 连接。
+现有旧PD可能占用相同卡和端口。先准备新环境，在维护窗口显式停止旧实例，确认资源释放后运行新任务；脚本不会自动停止旧服务。新任务失败时保留日志用于诊断。
 
-## 源码开发与 forward 热重载
+回退时先停止新任务，确认资源释放，再启动保留的旧环境。不要删除基础venv、模型或旧配置，也不要通过将候选wheel安装回基础venv来回退。
 
-开发时，在 `up` 前显式设置 `CODE_MODE=source`，并将 `TS_SRC`、`PLUGIN_SRC` 和 `UNI_SRC` 指向本地源码树。该模式仍使用 wheel 提供安装元数据和命令入口，同时把三个源码目录加入 `PYTHONPATH` 前部；wheel 模式则直接导入已安装包。
-
-源码模式会增加 `--allow-reload-forward` 和 SMG 的 `--enable-rl`，仅用于开发网络。
-
-```bash
-source "$PD_ROOT/runtime/env.sh"
-# 修改模型或 forward 代码后，通过网关执行热重载。
-ts reload-forward --url "http://$NODE_IP:${HTTP_PORT:-8010}"
-bash "$TS_SRC/tools/deploy/deepseek_v41/deploy_pd.sh" smoke
-```
-
-支持热重载的模块范围见 [forward 热重载说明](../guides/forward-reload.md)。不能假定所有插件或 native 库修改都支持热重载：应检查重载返回的模块报告，超出支持范围的修改需要重新构建或重启。
-
-开发迭代结束后，必须在重新启动的实例上验证。PD 源码模式下，三个节点的源码应保持一致，并通过 P 节点网关执行重载。
-
-## 三节点 1P2D 模式：启动流程
-
-每个角色使用 TP8/EP8，共需 24 个设备。低负载开发可先使用合并模式；需要研究阶段间干扰和并发时再选择 PD。容量规划时，应与相同卡数的合并部署多副本比较。
-
-三台节点使用相同的路径、设备编号和端口配置，相关路径必须在各节点本地存在。显式设置拓扑地址，以下均为文档示例地址，需替换为实际 IP：
-
-```bash
-export SERVING_MODE=pd CODE_MODE=wheel
-export P_IP=192.0.2.10 D1_IP=192.0.2.11 D2_IP=192.0.2.12
-export PD_ROOT=/workdir/deepseek-v41-pd-dev
-export NODE_IP="$P_IP"  # 在对应 Decode 节点上改为 D1_IP 或 D2_IP
-```
-
-### 一键启动整个集群
-
-首次部署时，可在具有三节点 SSH 密钥访问权限的控制机上执行：
-
-```bash
-export SSH_USER=root
-# 三台节点必须在相同路径下准备好源码/脚本、发布包、基础环境和模型。
-# 如有需要，通过 REMOTE_SCRIPT 指定远端脚本路径。
-bash tools/deploy/deepseek_v41/deploy_pd.sh cluster-up
-```
-
-该命令依次安装三个节点，先启动 P，再启动 D1/D2，最后通过 P 执行真实生成检查。SSH 使用 BatchMode；遇到第一个错误即中止，并保留已完成的安装和日志用于诊断。
-
-命令不会分发权重、源码或发布包，不会配置认证，也不会停止已有服务。必须使用新的 `PD_ROOT`；已安装的集群应使用下文的分节点启动命令。
-
-### 分节点启动
-
-先在 P 节点执行：
-
-```bash
-bash tools/deploy/deepseek_v41/deploy_pd.sh install
-bash tools/deploy/deepseek_v41/deploy_pd.sh start
-```
-
-在 D1、D2 节点分别执行 `bash tools/deploy/deepseek_v41/deploy_pd.sh up`。
-
-随后在 P 节点执行 `bash tools/deploy/deepseek_v41/deploy_pd.sh smoke` 或 `verify`。P 节点先单独启动，是为了避免尚未启动 D 节点就开始等待全部 worker，导致顺序部署阻塞。脚本不包含 SSH 密码，模型分发和远端认证需要提前准备。
-
-P 节点绑定 `HANDSHAKE_PORT` 及其后两个端口，分别用于 P、D1、D2。**三个握手地址都属于 P 节点**，不是 Decode 节点地址。P 使用可路由的 `DIST_PORT` rendezvous 地址，以发布正确的 bootstrap 地址。每个 D 节点使用本机 loopback 的 `DIST_PORT`；针对当前小缓存配置，Decode 的主机快照空间设置为 0.125 GiB。
-
-默认端口：HTTP 8010、引擎 8120、引擎指标 8121、网关指标 8122、握手 9010–9012、rendezvous 9600、P bootstrap 8998。Mooncake 和 ZMQ 还会建立数据面连接，节点间必须保证这些连接也能互通，不能只开放列出的固定端口；相关通道应放在可信网络中。
-
-握手和传输语义见 [PD 分离服务说明](disaggregation.md)。
-
-## 验证、停止与回退
-
-在合并模式节点或 P 节点上执行生成检查；`status`、`evidence` 和 `stop` 按需在各节点执行：
-
-```bash
-bash tools/deploy/deepseek_v41/deploy_pd.sh status
-bash tools/deploy/deepseek_v41/deploy_pd.sh smoke
-bash tools/deploy/deepseek_v41/deploy_pd.sh verify
-bash tools/deploy/deepseek_v41/deploy_pd.sh evidence
-bash tools/deploy/deepseek_v41/deploy_pd.sh stop
-```
-
-`smoke` 检查一次真实生成。`verify` 要求合并模式有一个普通 worker，或 PD 模式有一个 Prefill 和两个 Decode，均为 ready/healthy；随后发送六条顺序请求和两条并发请求，检查 HTTP 200、预期文本和 `stop` 结束原因，并将原始请求、响应保存到 `validation/`。这些是功能检查，不代表持续吞吐测试。
-
-PD 验收还需按本次请求的时间戳和 ID 对齐两个 Decode 的日志，检查八个 rank 的 `ts_decode_kv_transfer_success`、`ts_request_finished`，以及 `ascend_direct` 初始化记录。`evidence` 只收集日志事件，不能把历史成功记录当成本次验收通过。如果网关需要供远端访问，还应从外部客户端验证真实生成。
-
-当前配置为上下文 512、每引擎并发 1、网关并发 2、`numerics=auto`、greedy 采样和 Engram 主机表。更长上下文、持续负载、其他数值模式或不同的 P/D 配比，需要另行验证。算术 FP4 解码在已测 MoE 场景中增加约 450 MiB 临时张量峰值，提高并发前应检查端到端显存余量。
-
-`stop` 停止当前部署并关闭其 Supervisor，不会停止其他实例，也不会删除权重或发布包。回退时，先停止新部署，确认设备和端口已释放，再启动保留的旧环境。不要通过把候选 wheel 安装回基础 venv 的方式回退。
-
-无需 NPU 即可运行启动器回归测试：
+无NPU可运行启动器回归：
 
 ```bash
 source .venv/bin/activate
 python -m pytest -q test/cli/test_deepseek_v41_deployment.py
 ```
+
+已有验证包括：单TP8真实生成、基础venv重建、三节点拓扑采集、checkpoint容量统计、离线mapping审核及配置/角色控制回归。当前完整48设备多实例布局尚未完成实机端到端验收；上线前必须补齐上述worker、真实生成、跨实例逐rank传输和内存检查。
