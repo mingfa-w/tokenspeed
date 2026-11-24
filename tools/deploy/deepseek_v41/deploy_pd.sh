@@ -172,10 +172,11 @@ run_instance() {
         "DECODE_MAX_NUM_SEQS=$DECODE_MAX_NUM_SEQS" bash "$REMOTE_TOOLS/deploy_runtime.sh" "$task"
 }
 stage_tools() {
-    local node="$1" guide="$SCRIPT_DIR/../../../docs/serving/deepseek-v41-910b.md"
+    local node="$1" guide="$SCRIPT_DIR/../../../docs/serving/deepseek-v41-910b.md" entry="$SCRIPT_DIR/run_deepseek_v41_flash.sh"
+    [[ -f "$entry" ]] || entry="$SCRIPT_DIR/../../../run_deepseek_v41_flash.sh"
     [[ -f "$guide" ]] || guide="$SCRIPT_DIR/DEPLOYMENT.md"
     remote "$node" mkdir -p "$REMOTE_TOOLS"
-    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$SCRIPT_DIR/run_deepseek_v41_flash.sh" "$SSH_USER@$node:$REMOTE_TOOLS/"
+    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$entry" "$SSH_USER@$node:$REMOTE_TOOLS/"
     "${scp_cmd[@]}" "$guide" "$SSH_USER@$node:$REMOTE_TOOLS/DEPLOYMENT.md"
     if [[ "$SSH_AUTH_MODE" == password ]]; then
         # 输送到stdin，避免密码出现在命令参数或日志中；创建时即限制权限。
