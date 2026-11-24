@@ -438,4 +438,8 @@ source .venv/bin/activate
 python -m pytest -q test/cli/test_deepseek_v41_deployment.py
 ```
 
-已有验证包括：单TP8真实生成、基础venv重建、三节点拓扑采集、checkpoint容量统计、离线mapping审核及配置/角色控制回归。当前完整48设备多实例布局尚未完成实机端到端验收；上线前必须补齐上述worker、真实生成、跨实例逐rank传输和内存检查。
+2026-11-24已完成三节点48设备的2P4D实机端到端功能验收：先关闭三台机器旧Supervisor服务，再从10.255.76.138的 `/workdir/deepseek-v41-test/tools_dsv41_flash_dev` 执行 `bash run_deepseek_v41_flash.sh start`，退出码为0。该机P0使用0–7、P1使用8–15；10.255.111.50运行D0/D1，10.255.170.42运行D2/D3，两台D机器各按0–7、8–15分组。
+
+六个worker全部为ready且healthy，六个引擎和唯一网关均为RUNNING。启动自动smoke通过，随后 `check` 的6次顺序请求及2次并发请求全部通过，覆盖数字问答、城市问答和多行输出。含smoke在内，P0/P1分别完成5/4次请求，D0/D1/D2/D3分别完成2/2/2/3次请求；每个P的8个rank均记录到KV发送事件，每个D的8个rank均记录到KV接收成功事件。三台机器的16个设备均由npu-smi检查为健康；这是功能验收，不是吞吐最优或长期稳定性结论。
+
+启动日志位于协调节点 `/workdir/deepseek-v41-test/start-2p4d.log`，完整检查日志为同目录 `check-2p4d.log`，逐次生成结果和传输事件保存在各实例的 `validation` 子目录。当前服务保持运行。扩大上下文、并发、调整P/D比例或修改环境后需重新验收。
