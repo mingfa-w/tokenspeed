@@ -40,13 +40,14 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 | `deployment.py` | 共用的布局校验与配置生成逻辑，无需手动调用 |
 | `abc.txt` | 随代码提供的root密码文件，默认从入口同目录读取 |
 
-当前默认配置如下，源码、基础环境和模型是三个不同目录：
+下表记录当前在线实例及共用资源。在线运行标记为 `dsv41_flash_remote_152b4e8`；脚本内默认RUN_TAG仍为 `dsv41_flash_dev`，管理当前实例时须显式export运行标记。源码、基础环境和模型是三个不同目录：
 
 | 项目 | 当前默认值 |
 |---|---|
 | 源码入口目录 | `/home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41` |
-| 节点侧工具目录 | `/workdir/deepseek-v41-test/tools_dsv41_flash_dev` |
-| 实例根目录 | `/workdir/deepseek-v41-test/run_dsv41_flash_dev` |
+| 当前运行标记 | `dsv41_flash_remote_152b4e8` |
+| 节点侧工具目录 | `/workdir/deepseek-v41-test/tools_dsv41_flash_remote_152b4e8` |
+| 实例根目录 | `/workdir/deepseek-v41-test/run_dsv41_flash_remote_152b4e8` |
 | 基础环境 `BASE_ROOT` | `/workdir/tokenspeed-dsv41-uni-ops` |
 | 完整模型 `MODEL_PATH` | `/workdir/tokenspeed-dsv41/models/DeepSeek-V4.1-Flash` |
 | wheel发布包 `RELEASE_ROOT` | `/workdir/releases/dsv41-pd-20261124` |
@@ -66,7 +67,8 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 当前2P4D已完成实机验证。任一配置节点上执行下列命令即可检查整套服务，无需再次启动：
 
 ```bash
-cd /workdir/deepseek-v41-test/tools_dsv41_flash_dev
+cd /workdir/deepseek-v41-test/tools_dsv41_flash_remote_152b4e8
+export RUN_TAG=dsv41_flash_remote_152b4e8
 chmod 600 abc.txt
 bash run_deepseek_v41_flash.sh status
 bash run_deepseek_v41_flash.sh smoke
@@ -105,7 +107,7 @@ bash run_deepseek_v41_flash.sh stop
 
 ### 任一节点作为协调机
 
-`start` 已包含分发步骤；若暂不启动，可单独执行 `shell`（只分发工具和密码文件）或 `code`（再分发并校验wheel发布包）。分发后的入口、辅助程序、说明文档与 `abc.txt` 位于各节点 `$TEST_ROOT/tools_$RUN_TAG`，使用默认配置时即上表的节点侧工具目录。下载包中三个文件也可放到任一同目录执行。
+`start` 已包含分发步骤；若暂不启动，可单独执行 `shell`（只分发工具和密码文件）或 `code`（再分发并校验wheel发布包）。分发后的入口、辅助程序、说明文档与 `abc.txt` 位于各节点 `$TEST_ROOT/tools_$RUN_TAG`，按上表运行标记执行时即对应当前节点侧工具目录。下载包中三个文件也可放到任一同目录执行。
 
 代码已直接提供 `abc.txt`，无需再从FluentLLM目录复制。文件第一行用于SSH密码认证；其他机器可修改文件或设置 `SSH_PASSWORD_FILE=/absolute/path/to/password`。分发使用SSH标准输入和临时文件原子替换，远端密码文件权限为600，密码不进入命令参数和日志。
 
@@ -483,21 +485,23 @@ ts reload-forward --url "$GATEWAY_URL"
 
 ## 已完成验证与边界
 
-2026-11-24完成三节点48设备的2P4D功能验收：从10.255.76.138执行入口 `start`，退出码0；p0/p1在该机，d0/d1在10.255.111.50，d2/d3在10.255.170.42，各机分别使用0–7及8–15设备。
+2026-11-24重新取得远端 `uni-ops/dpk-flash-v41` 最新提交 `152b4e8b7e36c56a9a66e15d463e8c042cc58af6`，两份部署程序校验和与服务器源码一致。使用两文件版本先从10.255.111.50执行旧布局stop，确认三台均无残留服务且各16设备全部空闲，再从同一协调节点在全新运行目录执行plan、preflight、start、status、check和evidence。新的运行标记为 `dsv41_flash_remote_152b4e8`，设备和端口布局不变。
 
 | 验证 | 结果 |
 |---|---|
-| 全量首次启动（精简前程序） | 六引擎和唯一网关RUNNING，全部worker为ready且healthy |
-| 真实生成 | 自动smoke、6次顺序请求及2次并发请求全部正确，覆盖数字、城市及多行输出 |
-| 全实例覆盖 | 含smoke，P0/P1完成5/4次请求，D0/D1/D2/D3完成2/2/2/3次请求 |
-| 跨机KV | 每个P的8个rank均有发送事件，每个D的8个rank均有传输成功事件 |
-| 设备 | 三台各16设备均由npu-smi检查为健康 |
-| 两文件版本回归 | 67项测试通过，覆盖自动/显式布局、合并模式、角色控制、密码登录、失败停止及wheel发布校验 |
-| 两文件版本实机检查 | 六实例的新旧engine/gateway启动参数和布局指纹一致；新入口status、smoke及从其他节点再次分发通过，服务PID不变 |
+| 停止旧服务 | stop退出码0，六个旧引擎和网关停止，48设备空闲 |
+| 全新安装 | 六个实例均新建独立venv，wheel校验、包版本和导入来源检查通过，未复用旧实例目录 |
+| 远端两文件版本启动 | start退出码0，六引擎和唯一网关RUNNING，全部worker为ready且healthy |
+| 真实生成 | 自动smoke、6次顺序请求、2次并发请求全部正确，覆盖数字、城市及多行输出 |
+| 流式接口 | SSE正确返回7，finish_reason=stop，正常收到[DONE] |
+| 全实例覆盖 | 含smoke和流式请求，P0/P1完成5/5次请求，D0/D1/D2/D3完成3/2/3/2次请求 |
+| 跨机KV | 每个P的8个rank均有发送事件，每个D的8个rank均有传输成功事件，日志确认ascend_direct |
+| 设备及显存 | 三台各16设备健康，实测HBM约44654–45848MB/设备，容量65536MB（npu-smi原始单位） |
+| 启动器回归 | 既有67项回归测试通过；本次未修改部署程序，只补充实机结果 |
 
-全量首次启动验证使用精简前程序；两文件版本已检查参数等价、控制命令和真实smoke，未再重启整套模型。后续重启、环境变更、扩大上下文或并发、改变布局后需重新执行smoke/check及逐rank证据检查。本记录是功能验收，不代表吞吐最优或长期稳定性结论。
+旧目录 `run_dsv41_flash_dev` 保留但服务已停止，当前在线目录为 `run_dsv41_flash_remote_152b4e8`。从任一配置节点管理服务前，先设置本章开头的RUN_TAG。新模型、环境、布局、上下文或并发参数仍需重新验收；本记录是功能验收，不代表吞吐最优或长期稳定性结论。
 
-协调节点启动日志为 `/workdir/deepseek-v41-test/start-2p4d.log`，完整检查日志为同目录 `check-2p4d.log`；原始生成响应与传输事件位于各实例的 `validation/`。在线状态以当前 `status` 和 `smoke/check` 为准。
+协调节点10.255.111.50的日志位于 `/workdir/deepseek-v41-test/`：`stop-before-latest.log`、`remote-152b4e8-start.log`、`remote-152b4e8-check.log`、`remote-152b4e8-status.log` 和 `remote-152b4e8-evidence.log`；原始生成响应与传输事件位于各新实例的 `validation/`。在线状态以当前 `status` 和 `smoke/check` 为准。
 
 在Tokenspeed仓库根目录运行无需NPU的回归测试：
 
