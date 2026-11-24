@@ -8,7 +8,7 @@
 
 每个节点需要 Linux x86_64、Python 3.11、八个空闲的 64 GiB 910B 设备、完整本地模型（包括 Engram 表和 tokenizer），以及已验证的 Ascend 基础运行环境。用 `BASE_ROOT` 指定该环境，其目录必须包含：
 
-- `venv`：安装相互兼容的 Torch/TorchNPU、Tokenspeed engine/kernel/scheduler、SMG、Supervisor 和 Ascend Mooncake。
+- `venv`：按下文步骤创建，并安装或继承经过版本核对的 Torch/TorchNPU、Tokenspeed engine/kernel/scheduler、SMG、Supervisor 和 Ascend Mooncake。
 - `runtime/env.sh`：激活基础 venv，并设置 CANN、驱动和 SHMEM 动态库路径。
 - `runtime/guard/sitecustomize.py`：拦截旧算子库导入。
 - `env.sh` 引用的 SHMEM 库，以及匹配的 CANN 安装。
@@ -16,6 +16,201 @@
 参考软件组合为 CANN 9.0、Torch 2.9.0、TorchNPU 2.9.0、Tokenspeed 0.1.1、engine 0.1.0、scheduler 0.1.57、kernel-npu 0.1.0、SMG 1.16.0 和 Mooncake NPU 0.3.13。构建环境的**完整版本号**保存在 `build-info.json` 中，安装时会逐项检查。普通 CUDA Mooncake wheel 不能替代 NPU 版本；native wheel 还必须匹配 Python、机器架构、Torch ABI 和 CANN。
 
 安装过程会创建新的 venv，通过 `.pth` 文件读取基础 venv 的依赖，新环境中安装的 wheel 优先。必须保留基础环境，不要删除、移动或原地升级它。这种方式避免直接复制 venv 后残留旧 shebang；若需完全独立的运行包，应另行导出全部依赖并验证。
+
+### 1. 明确基础镜像与安装材料
+
+已验证环境使用 Python 3.11 创建 `--system-site-packages` venv：Torch、TorchNPU 和 Mooncake NPU 由基础镜像提供，Tokenspeed 等包安装到新 venv。不能把“镜像已安装的依赖”误当成 venv 自动下载的依赖。
+
+先准备以下材料，并在每个节点使用相同版本：
+
+| 材料 | 要求 |
+|---|---|
+| 基础 Python | Linux x86_64、Python 3.11；推荐使用已验证 Ascend 镜像中的 Python |
+| Torch / TorchNPU | 参考组合为 Torch `2.9.0+cpu`、TorchNPU `2.9.0.post2` 系列；定制构建的完整版本号以环境快照为准 |
+| Mooncake NPU | `mooncake-transfer-engine-npu==0.3.13`，提供 `mooncake.engine` |
+| Tokenspeed | `tokenspeed==0.1.1`、engine `0.1.0`、scheduler `0.1.57`、kernel-npu `0.1.0`；kernel 的完整开发版本必须来自同一已验证构建 |
+| 网关与进程管理 | `tokenspeed-smg` 的已验证构建、匹配的 grpc-proto/grpc-servicer，以及 `supervisor==4.2.5` |
+| Triton | `triton==3.2.0`、`triton-ascend==3.2.1`；安装顺序见下文 |
+| 离线 wheel 目录 | 上述非镜像包及其传递依赖，包括 build、wheel、setuptools、网络库、模型/tokenizer 库等；仅有两个业务依赖 wheel 不够 |
+| CANN / SHMEM | 已安装 CANN 9.0 与驱动；准备与 native 包匹配的 SHMEM SDK 或运行库 |
+
+不要只执行不带版本的 `pip install tokenspeed torch_npu mooncake`。同名包的最新版本不一定匹配本方案；尤其不能将 NPU Mooncake 替换为 CUDA 版本。
+
+若从已验收环境导出安装材料，在该环境上执行以下命令。`REFERENCE_ROOT` 是可访问的已验收环境目录，`BASE_ROOT` 是新建目录，不要指向正在运行的环境：
+
+```bash
+export REFERENCE_ROOT=/path/to/validated-runtime
+export BASE_ROOT=/workdir/deepseek-v41-base
+export SYSTEM_PYTHON=/path/to/ascend-image/bin/python3.11
+export SHMEM_SDK=/path/to/matching-shmem-sdk
+export CANN_SET_ENV=/usr/local/Ascend/ascend-toolkit/set_env.sh
+
+test ! -e "$BASE_ROOT"
+mkdir -p "$BASE_ROOT/runtime/wheels" "$BASE_ROOT/runtime/guard"
+cp -a "$REFERENCE_ROOT/runtime/wheels/." "$BASE_ROOT/runtime/wheels/"
+mkdir -p "$BASE_ROOT/runtime/shmem"
+cp -aL "$SHMEM_SDK/." "$BASE_ROOT/runtime/shmem/"
+# 读取 TorchNPU/native 包前，先加载参考环境的动态库设置。
+source "$REFERENCE_ROOT/runtime/env.sh"
+python - <<'PY'
+import importlib.metadata as m
+import json
+import os
+from pathlib import Path
+import torch
+import torch_npu
+
+names = ["torch", "torch-npu", "mooncake-transfer-engine-npu",
+         "tokenspeed", "tokenspeed-kernel", "tokenspeed-kernel-npu",
+         "tokenspeed-engine", "tokenspeed-scheduler", "tokenspeed-smg", "supervisor"]
+info = {"packages": {name: m.version(name) for name in names},
+        "cxx11_abi": bool(torch._C._GLIBCXX_USE_CXX11_ABI)}
+Path(os.environ["BASE_ROOT"], "runtime/base-environment.json").write_text(
+    json.dumps(info, indent=2) + "\n")
+PY
+python -m pip list --format=freeze > "$BASE_ROOT/runtime/reference-packages.txt"
+python -m pip check > "$BASE_ROOT/runtime/reference-pip-check.txt" 2>&1 || true
+```
+
+材料导出只需在已验收环境上做一次。部署到新节点时，将导出的 `runtime/` 目录复制到该节点的 `$BASE_ROOT/runtime/`，重新设置 `BASE_ROOT`、`SYSTEM_PYTHON` 和 `CANN_SET_ENV`，再从步骤 2 开始；新节点不需要保留 `REFERENCE_ROOT`。
+
+这里复制的是 wheel、SHMEM 和环境记录，不是原 venv。`reference-packages.txt` 是版本核对清单，不能直接当作“所有包都能从公网下载”的安装保证。基础镜像中已有的包仍需要相同镜像提供；若 wheel 缺失，应从对应构建发布方补齐。旧安装元数据中的 `file://...` 只是历史安装路径，不是可用下载地址。
+
+### 2. 创建 venv 并安装离线包
+
+先确认所选基础 Python 已经可以导入镜像提供的三个组件。若尚未配置动态库，可先加载 CANN，并按基础镜像要求将其 Python 的 `lib` 目录和驱动库加入 `LD_LIBRARY_PATH`：
+
+```bash
+source "$CANN_SET_ENV"
+export LD_LIBRARY_PATH="$("$SYSTEM_PYTHON" -c 'import sys; print(sys.base_prefix + "/lib")'):/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}"
+"$SYSTEM_PYTHON" - <<'PY'
+import sys
+import torch
+import torch_npu
+import mooncake.engine
+assert sys.version_info[:2] == (3, 11)
+print("Torch:", torch.__version__, "TorchNPU:", torch_npu.__version__)
+PY
+
+"$SYSTEM_PYTHON" -m venv --system-site-packages "$BASE_ROOT/venv"
+source "$BASE_ROOT/venv/bin/activate"
+python - <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+wheel_dir = Path(os.environ["BASE_ROOT"], "runtime/wheels")
+wheels = sorted(wheel_dir.glob("*.whl"))
+assert wheels, "离线 wheel 目录为空"
+# uni-ops 和 ts-plugin 由后续发布包安装到部署 venv，不在此安装旧版本。
+base = [p for p in wheels if not p.name.startswith(("mt_uni_ops-", "tokenspeed_longcat-"))]
+regular = [str(p) for p in base if not p.name.startswith("triton_ascend-")]
+ascend = [str(p) for p in base if p.name.startswith("triton_ascend-")]
+assert len(ascend) == 1, "需要且只能保留一个匹配的 triton-ascend wheel"
+for group in [regular, ascend]:
+    subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--no-deps",
+                    "--force-reinstall", *group], check=True)
+PY
+```
+
+`--no-index --no-deps` 使用已准备好的版本集合，不让解析器替换基础 Torch/NPU 包。它也意味着安装器不会替你补齐遗漏依赖，后面的版本、导入和依赖检查必须执行。
+
+Triton-Ascend 会覆盖上游 Triton 的部分文件，因此先安装其余 wheel，最后安装 `triton-ascend`；之后不要单独重装上游 Triton。
+
+**如果使用未预装 Torch/NPU/Mooncake 的普通 Python：**需要事先取得匹配的 Torch CPU、TorchNPU、Mooncake NPU wheel 和完整传递依赖。创建不带 `--system-site-packages` 的独立 venv，然后把这些 wheel 也纳入上面的离线安装集合。核心包的安装形式如下，路径需替换成实际文件：
+
+```bash
+# 这是普通 Python 的替代路径；不要在上面已经建好的基础 venv 上重复执行。
+test ! -e "$BASE_ROOT/venv"
+"$SYSTEM_PYTHON" -m venv "$BASE_ROOT/venv"
+source "$BASE_ROOT/venv/bin/activate"
+python -m pip install --no-index --no-deps \
+  "/path/to/wheels/torch-<完整版本>-cp311-cp311-<平台>.whl" \
+  "/path/to/wheels/torch_npu-<完整版本>-cp311-cp311-linux_x86_64.whl" \
+  "/path/to/wheels/mooncake_transfer_engine_npu-0.3.13-cp311-cp311-linux_x86_64.whl"
+```
+
+这条路径还需安装前述其余离线包和传递依赖，完成独立环境验收。已有运行环境不一定保留这些原始 wheel；缺少材料时，不能仅复制 `site-packages` 就声称完成了独立环境打包。当前已执行的部署验证采用的是前一种基础镜像继承方式。
+
+### 3. 生成环境脚本与旧算子导入拦截
+
+将下面内容写入新基础环境的 `runtime/env.sh`。脚本先保留 CANN 设置的 PATH，再激活 venv，避免嵌套激活清掉 `bisheng` 等编译器路径：
+
+```bash
+cat > "$BASE_ROOT/runtime/env.sh" <<'SH'
+#!/usr/bin/env bash
+TS_RUNTIME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TS_DEPLOY_ROOT="$(dirname "$TS_RUNTIME_DIR")"
+source "${CANN_SET_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+TS_CANN_PATH="$PATH"
+source "$TS_DEPLOY_ROOT/venv/bin/activate"
+export PATH="$TS_DEPLOY_ROOT/venv/bin:$TS_CANN_PATH"
+unset TS_CANN_PATH
+export SHMEM_HOME="$TS_RUNTIME_DIR/shmem"
+TS_PYTHON_LIB="$(python -c 'import sys; print(sys.base_prefix + "/lib")')"
+export LD_LIBRARY_PATH="$TS_PYTHON_LIB:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver:$SHMEM_HOME/lib:$SHMEM_HOME/lib64:${LD_LIBRARY_PATH:-}"
+export PYTHONPATH="$TS_RUNTIME_DIR/guard:${PYTHONPATH:-}"
+export TOKENSPEED_DISABLE_PLUGINS=longcat TOKENSPEED_KERNEL_DISABLE_PLUGINS=longcat
+export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
+export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1
+export TS_MODEL_PATH="${MODEL_PATH:-/models/DeepSeek-V4.1-Flash}"
+export TS_RUNTIME_DIR TS_DEPLOY_ROOT
+SH
+
+cat > "$BASE_ROOT/runtime/guard/sitecustomize.py" <<'PY'
+import importlib.abc
+import sys
+
+class UniOpsOnly(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in {"flash_ops", "flash_npu_kernel", "custom_ops", "fluent_sfa1_ops"}:
+            raise ImportError(f"{fullname} is disabled: this deployment uses uni_ops")
+
+sys.meta_path.insert(0, UniOpsOnly())
+PY
+source "$BASE_ROOT/runtime/env.sh"
+```
+
+`SHMEM_HOME` 必须包含实际匹配的动态库。用于运行的库目录不等于完整开发 SDK；若选择重新编译需要 SHMEM 的算子，还需准备相应头文件和构建依赖。
+
+### 4. 版本、动态库与导入自检
+
+```bash
+command -v python
+command -v bisheng
+python - <<'PY'
+import importlib.metadata as m
+import json
+import os
+from pathlib import Path
+import torch
+import torch_npu
+import mooncake.engine
+import tokenspeed
+import tokenspeed_engine
+import tokenspeed_scheduler
+import tokenspeed_kernel
+import supervisor
+
+expected = json.loads(Path(os.environ["BASE_ROOT"], "runtime/base-environment.json").read_text())
+for name, version in expected["packages"].items():
+    actual = m.version(name)
+    assert actual == version, (name, actual, version)
+assert bool(torch._C._GLIBCXX_USE_CXX11_ABI) == expected["cxx11_abi"]
+print("基础包版本、ABI 和导入检查通过")
+PY
+python -m smg --help
+python -m supervisor.supervisorctl --help
+python -m pip check > "$BASE_ROOT/runtime/base-pip-check.txt" 2>&1 || true
+cat "$BASE_ROOT/runtime/base-pip-check.txt"
+```
+
+`pip check` 的非零结果必须核对，不能直接忽略。已验收镜像中存在需要记录的元数据例外：Tokenspeed 声明的 `tokenspeed-mooncake` 依赖与实际使用的 NPU 替代发行包不同；Triton-Ascend 的 pytest 固定版本与测试环境可能不同；镜像中的 TorchAir 还可能与 protobuf 版本冲突。保留参考环境和新环境的检查输出，逐项确认。不能为清除第一项提示而安装 CUDA Mooncake；TorchAir 相关图编译路径也不在本 eager 方案的验收范围内。新增冲突或导入失败应先解决，再启动模型。
+
+最后在空闲设备上执行部署后的 `smoke`，确认模型加载和真实生成；仅导入通过不能证明服务通过验收。基础环境准备完成后，继续下文的 wheel 构建、发布和部署步骤。
+
+本章的基础镜像继承流程已在新目录实际执行，版本、ABI、导入和命令入口检查通过；新环境的 `pip check` 输出与参考环境一致，保留了上述三类例外。普通 Python 的独立环境路径未在本次验证中执行。本次环境搭建检查未启动模型或修改在线服务。
 
 ## 构建与发布 wheel
 
