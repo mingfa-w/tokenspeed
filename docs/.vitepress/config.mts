@@ -61,6 +61,7 @@ export default defineConfig({
         items: [
           { text: "Parallelism", link: "/serving/parallelism" },
           { text: "Disaggregated Serving", link: "/serving/disaggregation" },
+          { text: "DeepSeek V4.1 on 910B", link: "/serving/deepseek-v41-910b" },
           { text: "Weight Memory Policies", link: "/serving/weight-memory" }
         ]
       }

@@ -103,3 +103,6 @@ On supported Ascend NPUs, encode and prefill use the selected NPU device
 for copy-completion events and the device process group for embedding
 reconstruction. The prefill producer-step counter also resides on that device.
 Use an Ascend-compatible Mooncake build for embedding and KV transfers.
+
+For merged and 1P2D Ascend development launchers, see
+[DeepSeek V4.1 Flash on 910B](deepseek-v41-910b.md).
