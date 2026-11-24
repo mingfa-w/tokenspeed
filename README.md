@@ -79,6 +79,7 @@ Start here:
 - [Compatible Parameters](https://lightseek.org/tokenspeed/configuration/compatible-parameters)
 - [Parallelism](https://lightseek.org/tokenspeed/serving/parallelism)
 - [DeepSeek V4.1 Flash on Ascend 910B（中文）](docs/serving/deepseek-v41-910b.md)
+- [DeepSeek V4.1 Flash Deployment Skill](.agents/skills/tokenspeed-deepseek-v41-deploy/SKILL.md)
 
 ## Citation
 
