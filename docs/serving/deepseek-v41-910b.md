@@ -30,75 +30,122 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 
 当前目标节点为10.255.76.138、10.255.111.50、10.255.170.42，SSH端口已验证为8022。新实例仍需检查镜像中的软件版本，不应仅凭镜像名称判断兼容性。
 
-## 一键部署
+## 当前部署与快速开始
 
-先按后文准备基础环境、完整模型、wheel发布包和SSH认证。在控制机修改入口顶部的目录、IP和参数；在Tokenspeed仓库根目录执行：
+所有部署操作只使用一个入口。源码目录和下载包均需同时保留以下三个文件：
 
-```bash
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh preflight
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh start
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh status
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh log
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh stop
-```
-
-交付包根目录也提供同名入口，执行时去掉 `tools/deploy/deepseek_v41/` 前缀。配置区的主要参数：
-
-| 参数 | 含义 |
+| 文件 | 用途 |
 |---|---|
-| `PREFILL_INSTANCES` / `DECODE_INSTANCES` | P/D实例数，各实例8设备；默认2/4，即16卡P＋32卡D；数量之和须等于HOSTS的设备组数 |
-| `HOSTS` | 空格或换行分隔IP，按主机顺序自动划分0–7、8–15设备组；前PREFILL_INSTANCES组做P |
-| `RUN_TAG` / `TEST_ROOT` | 本次任务标记和远端工作根目录 |
-| `MODEL_PATH` / `BASE_ROOT` / `RELEASE_ROOT` | 模型、基础环境、wheel发布包路径 |
-| `CODE_MODE` | `wheel`导入安装包；`source`加载三个本地源码树并启用开发热重载 |
-| `PREFILL_MEM_FRACTION` / `DECODE_MEM_FRACTION` | P/D显存比例，默认均0.85 |
-| `PREFILL_MAX_NUM_SEQS` / `DECODE_MAX_NUM_SEQS` | 每实例并发，默认均1 |
-| `MAX_MODEL_LEN` / `MAX_TOTAL_TOKENS` / `CHUNKED_PREFILL_SIZE` | 默认512/1024/512，增大后需重新验收 |
-| `SSH_USER` / `SSH_PORT` | 默认root/8022 |
+| `run_deepseek_v41_flash.sh` | 唯一入口；顶部集中配置，负责构建发布、分发、启停、验收和日志 |
+| `deployment.py` | 共用的布局校验与配置生成逻辑，无需手动调用 |
+| `abc.txt` | 随代码提供的root密码文件，默认从入口同目录读取 |
 
-例如改为1P5D并使用新任务目录：
+当前默认配置如下，源码、基础环境和模型是三个不同目录：
 
-```bash
-PREFILL_INSTANCES=1 DECODE_INSTANCES=5 RUN_TAG=flash_1p5d \
-  bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
-# 确认规划后，将plan改为start。
-```
+| 项目 | 当前默认值 |
+|---|---|
+| 源码入口目录 | `/home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41` |
+| 节点侧工具目录 | `/workdir/deepseek-v41-test/tools_dsv41_flash_dev` |
+| 实例根目录 | `/workdir/deepseek-v41-test/run_dsv41_flash_dev` |
+| 基础环境 `BASE_ROOT` | `/workdir/tokenspeed-dsv41-uni-ops` |
+| 完整模型 `MODEL_PATH` | `/workdir/tokenspeed-dsv41/models/DeepSeek-V4.1-Flash` |
+| wheel发布包 `RELEASE_ROOT` | `/workdir/releases/dsv41-pd-20261124` |
+| 网关 | `http://10.255.76.138:8010` |
+| SSH | `root`，端口 `8022`，`sshpass -f abc.txt` |
 
-### root密码与任一节点启动
+三台910B均使用16设备，每实例TP8/EP8/PP1。`HOSTS` 按主机顺序分成0–7、8–15两组，前两个实例做P，其余做D：
 
-参考FluentLLM的 `sshpass -f abc.txt`，入口默认 `SSH_AUTH_MODE=password`、`SSH_USER=root`、`SSH_PORT=8022`。使用入口同目录的 `abc.txt`；可用 `SSH_PASSWORD_FILE` 指定其他绝对路径。代码中已直接提供当前机器使用的root密码文件，无需从FluentLLM目录复制；其他环境可修改文件第一行或通过上述变量覆盖：
+| 节点 | 实例 | 设备 | 角色 |
+|---|---|---|---|
+| 10.255.76.138 | p0 / p1 | 0–7 / 8–15 | 2P，16设备 |
+| 10.255.111.50 | d0 / d1 | 0–7 / 8–15 | 2D，16设备 |
+| 10.255.170.42 | d2 / d3 | 0–7 / 8–15 | 2D，16设备 |
 
-```bash
-cd /home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41
-chmod 600 ./abc.txt  # Git检出后设置本机文件权限
-command -v sshpass  # 缺少时，由管理员通过系统包管理器安装sshpass
-bash run_deepseek_v41_flash.sh preflight
-bash run_deepseek_v41_flash.sh shell
-```
+### 已有服务：查看与验证
 
-实际 `abc.txt` 已直接纳入代码，与入口位于同一目录，不再提供独立示例文件。`shell`、`code` 和 `start` 将入口、部署依赖、说明文档和权限为600的密码文件分发至每个配置节点的 `$TEST_ROOT/tools_$RUN_TAG`。密码经SSH标准输入写入，不进入命令参数或日志。所有节点须已有 `bash`、`python3`、`sshpass`、基础环境和完整模型；源码模式还要求三个源码目录存在。wheel发布包在 `start` 时校验，缺失时从执行节点复制，因此执行节点须持有发布包，或所有目标节点已具备同一发布包。
-
-完成分发后，在任一配置节点执行以下命令，都由该节点通过root SSH协调完整布局（不局限于启动本机实例）：
+当前2P4D已完成实机验证。任一配置节点上执行下列命令即可检查整套服务，无需再次启动：
 
 ```bash
 cd /workdir/deepseek-v41-test/tools_dsv41_flash_dev
+chmod 600 abc.txt
+bash run_deepseek_v41_flash.sh status
+bash run_deepseek_v41_flash.sh smoke
+# 完整验收：6次顺序请求＋2次并发请求，再收集各实例KV传输事件。
+bash run_deepseek_v41_flash.sh check
+bash run_deepseek_v41_flash.sh evidence
+```
+
+### 首次部署：准备、规划、启动
+
+在三台节点准备相同的基础环境、完整模型；源码模式还需三个源码树。执行节点应能读取wheel发布包，或所有目标节点已存在同一发布包。基础环境和wheel的完整准备方法见后文。
+
+在一个协调节点使用root账号执行。部署器不会替你停止旧服务：首次启动前确认目标设备和端口已释放；若当前布局正在运行，只需使用上一节的查看与验证命令。
+
+```bash
+cd /home/mingfa/code/tokenspeed/tools/deploy/deepseek_v41
+chmod 600 abc.txt
+command -v sshpass  # 缺少时由管理员通过系统包管理器安装sshpass
+# 先修改脚本顶部的HOSTS、P/D数量与路径；当前机器可沿用默认值。
+bash run_deepseek_v41_flash.sh plan
 bash run_deepseek_v41_flash.sh preflight
 bash run_deepseek_v41_flash.sh start
 bash run_deepseek_v41_flash.sh status
 bash run_deepseek_v41_flash.sh check
 ```
 
-路径随 `TEST_ROOT` / `RUN_TAG` 改变；使用非默认配置时，在各协调节点设置相同环境变量，或将共同配置写进入口顶部后重新执行 `shell` 分发。首次连接采用 `StrictHostKeyChecking=accept-new`，后续主机密钥变更会拒绝连接。需要已预置known_hosts时设 `SSH_HOST_KEY_CHECKING=yes`；参考脚本式关闭校验可显式设 `SSH_HOST_KEY_CHECKING=no`。密钥认证设置 `SSH_AUTH_MODE=key`，不会使用或分发密码文件。
+`plan` 仅在本机校验布局；`preflight` 检查SSH、基础环境脚本和模型目录，不检查完整模型可用性。`start` 自动分发工具、校验或复制wheel发布包、准备所有实例，再依次启动网关归属实例、其余P和D，最后等待全部worker健康并执行真实问答。仅看到RUNNING不能代替生成验收。
 
-`preflight` 仅检查连接和路径；`start` 会先检查全部节点，再分发、准备和依次启动实例，最后执行真实生成验收。检查通过不等于完整模型服务已验收。
-
-## 显式配置任意P/D放置
-
-需要逐实例决定位置时，仍使用同一个入口，设置 `PD_LAYOUT` 或 `PD_LAYOUT_FILE` 覆盖自动布局；此时不再使用主机列表和P/D数量生成布局。每行格式为 `实例ID 角色 IP 设备组`：
+需要停止整套当前布局时，单独执行：
 
 ```bash
-export SERVING_MODE=pd CODE_MODE=wheel
+bash run_deepseek_v41_flash.sh stop
+```
+
+`start` 不是重启命令。重复启动正在运行的布局会因设备或端口占用失败；正常重启应先执行 `stop`、确认释放完成，再执行 `start`。切换布局、模型或运行参数时使用新的 `RUN_TAG`，同时确认旧布局已停止；新目录不会自动避让旧布局占用的设备和端口。
+
+### 任一节点作为协调机
+
+`start` 已包含分发步骤；若暂不启动，可单独执行 `shell`（只分发工具和密码文件）或 `code`（再分发并校验wheel发布包）。分发后的入口、辅助程序、说明文档与 `abc.txt` 位于各节点 `$TEST_ROOT/tools_$RUN_TAG`，使用默认配置时即上表的节点侧工具目录。下载包中三个文件也可放到任一同目录执行。
+
+代码已直接提供 `abc.txt`，无需再从FluentLLM目录复制。文件第一行用于SSH密码认证；其他机器可修改文件或设置 `SSH_PASSWORD_FILE=/absolute/path/to/password`。分发使用SSH标准输入和临时文件原子替换，远端密码文件权限为600，密码不进入命令参数和日志。
+
+所有节点须已有bash、python3和sshpass；模型、基础环境和源码不会自动分发。首次连接使用 `StrictHostKeyChecking=accept-new`，后续主机密钥变化会拒绝连接。预置known_hosts时可设 `SSH_HOST_KEY_CHECKING=yes`；需要参考脚本式关闭校验时显式设为 `no`。使用密钥认证时设置 `SSH_AUTH_MODE=key`，不会使用或分发密码文件。
+
+环境变量覆盖只对本次执行生效。使用非默认主机、数量、路径或 `REMOTE_TOOLS` 时，各协调节点必须设置同一组变量；也可把共同配置写入入口顶部后重新分发。不要假定从一个协调节点设置的环境变量会永久保存到其他节点。
+
+## 调整布局与运行参数
+
+### 自动P/D布局
+
+一般只修改 `HOSTS`、`PREFILL_INSTANCES`、`DECODE_INSTANCES` 和路径。默认三台主机共六个8设备组，P/D数量之和必须为6；数量决定实例数，不是每实例的EP大小。
+
+| 参数 | 含义 |
+|---|---|
+| `HOSTS` | 按顺序填写主机IP，空格或换行分隔；每主机自动分为两个8设备组 |
+| `PREFILL_INSTANCES` / `DECODE_INSTANCES` | 默认2/4，即16设备P＋32设备D；每实例固定TP8/EP8/PP1 |
+| `RUN_TAG` / `TEST_ROOT` | 默认 `dsv41_flash_dev` / `/workdir/deepseek-v41-test` |
+| `PD_ROOT` / `REMOTE_TOOLS` | 默认 `$TEST_ROOT/run_$RUN_TAG` / `$TEST_ROOT/tools_$RUN_TAG` |
+| `MODEL_PATH` / `BASE_ROOT` / `RELEASE_ROOT` | 完整模型、基础环境和wheel发布包目录 |
+| `CODE_MODE` | `wheel`测试安装包；`source`加载本地源码并启用开发热重载 |
+| `PREFILL_MEM_FRACTION` / `DECODE_MEM_FRACTION` | P/D显存比例，默认均0.85 |
+| `PREFILL_MAX_NUM_SEQS` / `DECODE_MAX_NUM_SEQS` | 每实例并发，默认均1 |
+| `MAX_MODEL_LEN` / `MAX_TOTAL_TOKENS` / `CHUNKED_PREFILL_SIZE` | 默认512/1024/512，增大后重新验收 |
+| `SSH_USER` / `SSH_PORT` / `SSH_AUTH_MODE` | 默认root / 8022 / password |
+
+例如1P5D：
+
+```bash
+PREFILL_INSTANCES=1 DECODE_INSTANCES=5 RUN_TAG=flash_1p5d \
+  bash run_deepseek_v41_flash.sh plan
+# 释放目标资源后，用相同环境变量将plan改为start；后续status/stop也保留这些变量。
+```
+
+### 显式布局：同机混合P/D
+
+需要逐实例安排位置时，设置 `PD_LAYOUT` 或 `PD_LAYOUT_FILE` 覆盖自动布局。仍使用同一入口，此时不会按HOSTS和P/D数量生成布局。每行格式为 `实例ID 角色 IP 设备组`：
+
+```bash
+export SERVING_MODE=pd CODE_MODE=wheel RUN_TAG=flash_3p3d
 unset PD_LAYOUT_FILE
 export PD_LAYOUT='
 p0 prefill 10.255.76.138 0,1,2,3,4,5,6,7
@@ -108,43 +155,35 @@ d1 decode  10.255.111.50 8,9,10,11,12,13,14,15
 p2 prefill 10.255.170.42 0,1,2,3,4,5,6,7
 d2 decode  10.255.170.42 8,9,10,11,12,13,14,15
 '
-export RUN_TAG=flash_3p3d
-# 还需设置BASE_ROOT、MODEL_PATH、RELEASE_ROOT、SSH等环境变量。
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
-bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh start
+bash run_deepseek_v41_flash.sh plan
+# 释放目标资源后执行start，后续命令保留同一布局配置。
 ```
 
-这份配置为每台1P＋1D，共3P3D。P卡数=`prefill行数×8`，D卡数=`decode行数×8`。同样可配置1P5D、2P4D，或更多主机。合并模式使用 `SERVING_MODE=merged`，各行角色改为 `regular`。
+该配置每台1P＋1D，共3P3D。P/D设备数分别为对应行数×8。也可将行内容保存到本地文件，用 `PD_LAYOUT_FILE=/path/to/my.layout` 读取，同时取消 `PD_LAYOUT`。文件还支持JSON实例列表或 `{"instances":[...]}`，每实例包含 `id/role/node/devices`；devices为逗号分隔字符串或数字列表。文件只作为数据解析，不执行shell命令或变量展开。
 
-也可以把行内容保存到本地文件，用 `PD_LAYOUT_FILE=/path/to/my.layout` 读取，并先取消 `PD_LAYOUT`。文件还支持JSON实例列表，或 `{"instances":[...]}`；每个实例包含 `id/role/node/devices`，devices为逗号分隔字符串或数字列表。文件作为数据解析，不执行shell命令或变量展开。
+默认 `REQUIRE_FULL_NODE=1` 要求每台被引用机器的0–15设备完整分配、无重叠；明确测试部分设备时可设为0。每实例必须使用0–7或8–15完整HCCS组。实例ID必须唯一，修改布局后使用新的RUN_TAG/PD_ROOT。
 
-显式布局默认 `REQUIRE_FULL_NODE=1`，要求每台被引用机器的0–15设备完整分配且无重叠。明确进行部分设备测试时，可设置为0。每实例必须使用0–7或8–15完整HCCS组。实例ID唯一，修改布局后使用新的RUN_TAG/PD_ROOT。
+### P/D合并部署
 
-## 工具组成与环境文件
-
-部署工具从五个文件收敛为两个，不需要开发者区分“配置入口、批量入口、单机入口”：
-
-| 文件 | 用途 |
-|---|---|
-| `run_deepseek_v41_flash.sh` | 顶部集中配置；统一完成启停、分发、wheel构建发布、验证和日志收集 |
-| `deployment.py` | 共用一条布局校验和配置生成路径，自动分配设备、端口与网关 |
-
-最少只需这两个文件及随代码提供的 `abc.txt`。文档随源码和wheel制品分发；单独复制这两个文件也能执行部署命令。`HOSTS`、P/D数量、运行目录和密码文件是常用配置；端口、显存等调优参数保留环境变量覆盖。P/D合并也使用同一入口，例如单机16设备启动两个合并实例：
+使用 `SERVING_MODE=merged`，HOSTS中的每个8设备组均作为一个合并实例，不使用P/D数量参数。单机16设备部署两个合并实例示例：
 
 ```bash
+unset PD_LAYOUT PD_LAYOUT_FILE
 SERVING_MODE=merged HOSTS=10.255.76.138 RUN_TAG=flash_merged \
-  bash tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh plan
-# 确认旧服务已停止、目标设备和端口空闲后，将plan改为start。
+  bash run_deepseek_v41_flash.sh plan
+# 释放该主机的设备和端口后，用相同环境变量将plan改为start。
 ```
 
-旧批量和单机入口已删除；旧 `DEVICE_SLOTS` 改用 `HOSTS` 自动分组，复杂映射用 `PD_LAYOUT`。旧 `DS_IPLIST/DEVICE_POOLS/DEPLOY_ENTRY` 会报迁移提示，避免静默忽略。常用 `plan/preflight/start/stop/status/check/build/publish` 保持，快速验证统一为 `smoke`，传输证据统一为 `evidence`；`cluster-up`、`local-*` 等重复入口不再公开。脚本内部的 `--local` 用于远程调度，开发者无需调用。
+合并模式的显式布局使用 `regular` 角色。两种模式共用设备/端口校验、安装、Supervisor和生成验收流程。
 
-源码没有预置的 `runtime/env.sh`：
+## 环境文件与目录
 
-- `$BASE_ROOT/runtime/env.sh`：按下文环境准备步骤3创建，负责基础venv及CANN/SHMEM。
-- `$PD_ROOT/<实例ID>/runtime/env.sh`：由部署器安装该实例时生成，负责设备、模型和源码路径。
+源码不预置 `runtime/env.sh`，应区分下面两类生成文件：
 
-默认任务目录为 `$TEST_ROOT/run_$RUN_TAG/<实例ID>/`，根目录可用 `PD_ROOT` 覆盖。先生成文件，再执行source，不要在Tokenspeed源码的runtime目录寻找它们。
+- `$BASE_ROOT/runtime/env.sh`：按下一章步骤3创建，激活基础venv并设置CANN/SHMEM。
+- `$PD_ROOT/<实例ID>/runtime/env.sh`：准备该实例时生成，设置部署venv、设备、模型及源码路径。
+
+实例目录还包含 `venv/`、`runtime/node.json`、`runtime/supervisord.conf`、`logs/` 和 `validation/`。源码目录、基础环境和实例目录不可互换；先生成环境文件，再执行source。
 
 ## 环境准备
 
@@ -350,9 +389,10 @@ cat "$BASE_ROOT/runtime/base-pip-check.txt"
 
 ## 构建与发布wheel
 
-在匹配的构建机上执行，依赖安装必须在venv中。源代码树须无未提交的已跟踪修改：
+当前已有可用发布包时可直接部署，无需重复构建。依赖代码变更后，在匹配的构建机上构建新发布包；依赖安装必须在venv中，三个源代码树须无未提交的已跟踪修改，BUILD_ROOT和RELEASE_ROOT须使用尚不存在的新目录：
 
 ```bash
+export BASE_ROOT=/workdir/tokenspeed-dsv41-uni-ops
 source "$BASE_ROOT/runtime/env.sh"
 export TS_SRC=/home/mingfa/code/tokenspeed
 export UNI_SRC=/home/mingfa/code/uni-ops
@@ -369,6 +409,8 @@ bash "$TS_SRC/tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh" check-release
 
 发布目录含两个新依赖wheel、已验证Tokenspeed Python wheel、两个部署文件、本文、版本及SHA256清单。依赖wheel使用 `.post0+g<commit>` 版本，不改原检出目录。Tokenspeed Python wheel与源码逐文件比对后复用；engine/kernel/scheduler由基础环境提供。先安装其他包，最后安装Triton-Ascend，不能事后单独重装上游Triton。
 
+发布包包含两份部署程序和文档，不包含SSH密码文件；从发布包执行入口时，还需准备同目录的abc.txt或设置SSH_PASSWORD_FILE（密钥认证则不需要密码文件）。当前预制包 `dsv41-pd-20261124` 的两个依赖版本分别为 `0.1.0.post20261124+g25e26b43` 和 `0.1.0.post20261124+gb22ddb94`；历史制品中的部署程序保留原样，节点侧工具使用当前源码分发的版本，不从历史制品覆盖。
+
 publish采用暂存目录后重命名，拒绝覆盖已有release。整个发布目录需在控制机可读；start会校验远端已有目录，缺失时从控制机分发。它不会复制模型、基础环境或源码。source模式的三个源码路径需在各节点准备好并保持一致。
 
 若需上传包仓库，首次publish时显式提供 `TWINE_REPOSITORY_URL`，凭据由环境或凭据管理器提供；仓库需支持PEP440本地版本。该动作只上传uni-ops和ts-plugin。上传失败保留文件制品，可用 `python -m twine upload` 重试，不覆盖release。文件发布本身不等于上传公共PyPI。
@@ -380,6 +422,8 @@ publish采用暂存目录后重命名，拒绝覆盖已有release。整个发布
 | 命令 | 行为 |
 |---|---|
 | `plan` | 离线校验并显示各角色卡数、设备、端口和网关 |
+| `preflight` | 检查所有目标节点SSH、协调工具、基础环境和模型目录，不启动服务 |
+| `build/publish/check-release` | 在执行节点构建wheel、发布不可覆盖的文件制品、校验SHA256清单 |
 | `start` | 分发工具及缺失的release，全部准备完成后先启动网关归属实例，再其他P，最后D；执行真实生成检查 |
 | `startp/startd` | 只准备并启动对应角色，不等待另一角色就绪 |
 | `stop/stopp/stopd` | 按启动逆序停止全部/P/D实例，不操作其他任务 |
@@ -431,26 +475,35 @@ ts reload-forward --url "$GATEWAY_URL"
 
 三台主机均约2TiB内存；Engram表约188.83GiB/完整副本，双实例逻辑表约377.67GiB，仍需检查实测RSS、共享映射和NUMA。当前保持512上下文和每引擎并发1；扩大参数、启用其他数值模式前另行验证。算术FP4解码在已测MoE场景增加约450MiB临时张量峰值，不应把显存比例硬设为1.0。
 
-## 切换、回退与检查
+## 切换与回退
 
-现有旧PD可能占用相同卡和端口。先准备新环境，在维护窗口显式停止旧实例，确认资源释放后运行新任务；脚本不会自动停止旧服务。新任务失败时保留日志用于诊断。
+不同任务可能使用同一设备和端口。先准备新发布包与环境，再显式停止旧布局，确认资源释放后启动新布局。脚本不会自动停止其他任务；失败时保留日志用于诊断。
 
-回退时先停止新任务，确认资源释放，再启动保留的旧环境。不要删除基础venv、模型或旧配置，也不要通过将候选wheel安装回基础venv来回退。
+回退时先停止新布局，确认资源释放，再用旧配置启动保留的旧环境。不要删除基础venv、完整模型或旧配置，也不要把候选wheel直接安装回基础venv。控制脚本更新和 `shell` 分发本身不会重启模型服务。
 
-无NPU可运行启动器回归：
+## 已完成验证与边界
+
+2026-11-24完成三节点48设备的2P4D功能验收：从10.255.76.138执行入口 `start`，退出码0；p0/p1在该机，d0/d1在10.255.111.50，d2/d3在10.255.170.42，各机分别使用0–7及8–15设备。
+
+| 验证 | 结果 |
+|---|---|
+| 全量首次启动（精简前程序） | 六引擎和唯一网关RUNNING，全部worker为ready且healthy |
+| 真实生成 | 自动smoke、6次顺序请求及2次并发请求全部正确，覆盖数字、城市及多行输出 |
+| 全实例覆盖 | 含smoke，P0/P1完成5/4次请求，D0/D1/D2/D3完成2/2/2/3次请求 |
+| 跨机KV | 每个P的8个rank均有发送事件，每个D的8个rank均有传输成功事件 |
+| 设备 | 三台各16设备均由npu-smi检查为健康 |
+| 两文件版本回归 | 67项测试通过，覆盖自动/显式布局、合并模式、角色控制、密码登录、失败停止及wheel发布校验 |
+| 两文件版本实机检查 | 六实例的新旧engine/gateway启动参数和布局指纹一致；新入口status、smoke及从其他节点再次分发通过，服务PID不变 |
+
+全量首次启动验证使用精简前程序；两文件版本已检查参数等价、控制命令和真实smoke，未再重启整套模型。后续重启、环境变更、扩大上下文或并发、改变布局后需重新执行smoke/check及逐rank证据检查。本记录是功能验收，不代表吞吐最优或长期稳定性结论。
+
+协调节点启动日志为 `/workdir/deepseek-v41-test/start-2p4d.log`，完整检查日志为同目录 `check-2p4d.log`；原始生成响应与传输事件位于各实例的 `validation/`。在线状态以当前 `status` 和 `smoke/check` 为准。
+
+在Tokenspeed仓库根目录运行无需NPU的回归测试：
 
 ```bash
 source .venv/bin/activate
 python -m pytest -q test/cli/test_deepseek_v41_deployment.py
 ```
 
-2026-11-24已完成三节点48设备的2P4D实机端到端功能验收：先关闭三台机器旧Supervisor服务，再从10.255.76.138的 `/workdir/deepseek-v41-test/tools_dsv41_flash_dev` 执行 `bash run_deepseek_v41_flash.sh start`，退出码为0。该机P0使用0–7、P1使用8–15；10.255.111.50运行D0/D1，10.255.170.42运行D2/D3，两台D机器各按0–7、8–15分组。
-
-这次实机验证使用精简前版本。六个worker全部为ready且healthy，六个引擎和唯一网关均为RUNNING。启动自动smoke通过，随后 `check` 的6次顺序请求及2次并发请求全部通过，覆盖数字问答、城市问答和多行输出。含smoke在内，P0/P1分别完成5/4次请求，D0/D1/D2/D3分别完成2/2/2/3次请求；每个P的8个rank均记录到KV发送事件，每个D的8个rank均记录到KV接收成功事件。三台机器的16个设备均由npu-smi检查为健康；这是功能验收，不是吞吐最优或长期稳定性结论。
-
-启动日志位于协调节点 `/workdir/deepseek-v41-test/start-2p4d.log`，完整检查日志为同目录 `check-2p4d.log`，逐次生成结果和传输事件保存在各实例的 `validation` 子目录。当前服务保持运行。扩大上下文、并发、调整P/D比例或修改环境后需重新验收。
-
-
-## 精简版本的验证边界
-
-精简版本保持同一默认布局、端口和实例目录。新入口会核对既有实例的布局指纹及运行参数，确保不会把新配置误用于旧实例。67项回归测试通过，覆盖自动/显式布局、合并模式、角色控制、密码登录、失败停止以及wheel发布和校验。六个在线实例的新旧engine/gateway启动参数及布局指纹逐项一致；新入口通过了在线status和真实问答smoke。运行中的2P4D使用原环境，不会因更换控制脚本自动重启；新的文件组合须在后续重启时再次执行smoke/check。
+旧配置迁移：`DEVICE_SLOTS` 改用 `HOSTS` 自动分组，复杂映射用 `PD_LAYOUT`；旧 `DS_IPLIST/DEVICE_POOLS/DEPLOY_ENTRY` 会给出迁移提示。快速验证统一为 `smoke`、传输证据统一为 `evidence`，不再公开 `cluster-up`、`local-*` 等重复入口。内部 `--local` 仅供远程协调器使用。

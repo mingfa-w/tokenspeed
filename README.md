@@ -78,6 +78,7 @@ Start here:
 - [Server Parameters](https://lightseek.org/tokenspeed/configuration/server)
 - [Compatible Parameters](https://lightseek.org/tokenspeed/configuration/compatible-parameters)
 - [Parallelism](https://lightseek.org/tokenspeed/serving/parallelism)
+- [DeepSeek V4.1 Flash on Ascend 910B（中文）](docs/serving/deepseek-v41-910b.md)
 
 ## Citation
 
