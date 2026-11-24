@@ -172,12 +172,15 @@ run_instance() {
         "DECODE_MAX_NUM_SEQS=$DECODE_MAX_NUM_SEQS" bash "$REMOTE_TOOLS/deploy_runtime.sh" "$task"
 }
 stage_tools() {
-    local node="$1" guide="$SCRIPT_DIR/../../../docs/serving/deepseek-v41-910b.md" entry="$SCRIPT_DIR/run_deepseek_v41_flash.sh"
+    local node="$1" staging guide="$SCRIPT_DIR/../../../docs/serving/deepseek-v41-910b.md" entry="$SCRIPT_DIR/run_deepseek_v41_flash.sh"
     [[ -f "$entry" ]] || entry="$SCRIPT_DIR/../../../run_deepseek_v41_flash.sh"
     [[ -f "$guide" ]] || guide="$SCRIPT_DIR/DEPLOYMENT.md"
     remote "$node" mkdir -p "$REMOTE_TOOLS"
-    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$entry" "$SSH_USER@$node:$REMOTE_TOOLS/"
-    "${scp_cmd[@]}" "$guide" "$SSH_USER@$node:$REMOTE_TOOLS/DEPLOYMENT.md"
+    staging="$(remote "$node" mktemp -d "$REMOTE_TOOLS/.stage.XXXXXX")"
+    "${scp_cmd[@]}" "$SCRIPT_DIR/deploy_pd.sh" "$RUNTIME_SCRIPT" "$SCRIPT_DIR/configure.py" "$SCRIPT_DIR/pd_layout.py" "$entry" "$SSH_USER@$node:$staging/"
+    "${scp_cmd[@]}" "$guide" "$SSH_USER@$node:$staging/DEPLOYMENT.md"
+    # 先传到临时目录，再原子替换，避免协调节点向自身分发时截断源脚本。
+    remote "$node" bash -c 'set -e; mv -- "$1"/* "$2"/; rmdir -- "$1"' bash "$staging" "$REMOTE_TOOLS"
     if [[ "$SSH_AUTH_MODE" == password ]]; then
         # 输送到stdin，避免密码出现在命令参数或日志中；创建时即限制权限。
         remote "$node" bash -c 'set -e; umask 077; temporary=$(mktemp "$1.tmp.XXXXXX"); trap '"'"'rm -f "$temporary"'"'"' EXIT; cat > "$temporary"; chmod 600 "$temporary"; mv -f "$temporary" "$1"; trap - EXIT' bash "$REMOTE_TOOLS/abc.txt" < "$SSH_PASSWORD_FILE"
