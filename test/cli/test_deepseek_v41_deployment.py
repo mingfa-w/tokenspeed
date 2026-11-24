@@ -30,7 +30,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
-    "dsv41_configure", ROOT / "tools/deploy/deepseek_v41/configure.py"
+    "dsv41_configure", ROOT / "tools/deploy/deepseek_v41/deployment.py"
 )
 CONFIG = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONFIG)
@@ -48,14 +48,11 @@ def settings(tmp_path, mode, code, node):
     (root / "venv/bin").mkdir(parents=True)
     # Simulate activate restoring its previous PATH, as a real nested venv does.
     (root / "venv/bin/activate").write_text('export PATH="$ORIGINAL_PATH"\n')
-    return dict(
+    env = dict(
         SERVING_MODE=mode,
         CODE_MODE=code,
         PD_ROOT=str(root),
         NODE_IP=node,
-        P_IP="192.0.2.1",
-        D1_IP="192.0.2.2",
-        D2_IP="192.0.2.3",
         BASE_ROOT=str(base),
         MODEL_PATH="/models/DeepSeek-V4.1-Flash",
         DEVICES="0,1,2,3,4,5,6,7",
@@ -70,6 +67,21 @@ def settings(tmp_path, mode, code, node):
         PLUGIN_SRC="/src/ts-plugin",
         UNI_SRC="/src/uni-ops",
     )
+    rows = (
+        [dict(id="m0", role="regular", node=node, devices=env["DEVICES"])]
+        if mode == "merged"
+        else [
+            dict(id=name, role=role, node=host, devices=env["DEVICES"])
+            for name, role, host in [
+                ("p0", "prefill", "192.0.2.1"),
+                ("d0", "decode", "192.0.2.2"),
+                ("d1", "decode", "192.0.2.3"),
+            ]
+        ]
+    )
+    env["LAYOUT_JSON"] = json.dumps(dict(instances=rows, require_full_node=False))
+    env["INSTANCE_ID"] = next(row["id"] for row in rows if row["node"] == node)
+    return env
 
 
 def launch(tmp_path, runtime, name):
@@ -140,9 +152,9 @@ def test_launchers_route_to_the_selected_role(tmp_path, code, mode, node, role, 
         {"SERVING_MODE": ""},
         {"CODE_MODE": ""},
         {"DEVICES": "0,1,2,3"},
-        {"D1_IP": "192.0.2.1"},
+        {"INSTANCE_ID": "unknown"},
         {"HTTP_PORT": "9011"},
-        {"HTTP_PORT": "65535"},
+        {"HTTP_PORT": "65536"},
         {"NODE_IP": "192.0.2.99"},
     ],
 )
@@ -152,52 +164,6 @@ def test_invalid_deployments_are_rejected_before_runtime_is_written(tmp_path, ch
     with pytest.raises(ValueError):
         CONFIG.configure(env)
     assert not (Path(env["PD_ROOT"]) / "runtime/node.json").exists()
-
-
-@pytest.mark.parametrize("fail_at", [0, 2])
-def test_cluster_start_orders_roles_and_stops_on_remote_failure(tmp_path, fail_at):
-    commands = tmp_path / "commands"
-    commands.mkdir()
-    log = tmp_path / "ssh.jsonl"
-    ssh = commands / "ssh"
-    ssh.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json,os,sys,pathlib\n"
-        "p=pathlib.Path(os.environ['SSH_LOG'])\n"
-        "calls=p.read_text().splitlines() if p.exists() else []\n"
-        "with p.open('a') as f:f.write(json.dumps(sys.argv[1:])+'\\n')\n"
-        "sys.exit(17 if int(os.environ['FAIL_AT'])==len(calls)+1 else 0)\n"
-    )
-    ssh.chmod(0o755)
-    env = dict(
-        os.environ,
-        PATH=f"{commands}:{os.environ['PATH']}",
-        SSH_LOG=str(log),
-        FAIL_AT=str(fail_at),
-        SERVING_MODE="pd",
-        CODE_MODE="wheel",
-        P_IP="192.0.2.1",
-        D1_IP="192.0.2.2",
-        D2_IP="192.0.2.3",
-    )
-    result = subprocess.run(
-        ["bash", str(ROOT / "tools/deploy/deepseek_v41/deploy_pd.sh"), "cluster-up"],
-        env=env,
-    )
-    calls = [json.loads(line) for line in log.read_text().splitlines()]
-    if fail_at:
-        assert result.returncode == 17
-        assert len(calls) == fail_at
-    else:
-        assert result.returncode == 0
-        assert [c[2].split("@")[1] for c in calls] == [
-            "192.0.2.1",
-            "192.0.2.2",
-            "192.0.2.3",
-        ] * 2 + ["192.0.2.1"]
-        assert all(c[-1].rstrip().endswith("install") for c in calls[:3])
-        assert all(c[-1].rstrip().endswith("start") for c in calls[3:6])
-        assert calls[-1][-1].rstrip().endswith("smoke")
 
 
 @pytest.mark.parametrize(
@@ -268,7 +234,8 @@ def front_run(
         FAIL_TASK=fail_task,
         SERVING_MODE=mode,
         CODE_MODE="wheel",
-        DS_IPLIST=ips,
+        HOSTS=ips,
+        SSH_AUTH_MODE="key",
         RUN_TAG="case_a",
         TEST_ROOT=str(tmp_path / "runs"),
         LOCAL_LOG_ROOT=str(tmp_path / "logs"),
@@ -282,7 +249,23 @@ def front_run(
     ]:
         env.pop(key, None)
     if pools is not None:
-        env["DEVICE_POOLS"] = pools
+        hosts = ips.split()
+        rows = [
+            dict(
+                id=(
+                    "m0" if mode == "merged" else "p0" if index == 0 else f"d{index-1}"
+                ),
+                role=(
+                    "regular"
+                    if mode == "merged"
+                    else "prefill" if index == 0 else "decode"
+                ),
+                node=host,
+                devices=pools,
+            )
+            for index, host in enumerate(hosts)
+        ]
+        env.update(PD_LAYOUT=json.dumps(rows), REQUIRE_FULL_NODE="0")
     if layout is not None:
         env.pop("DS_IPLIST", None)
         env.pop("DEVICE_POOLS", None)
@@ -290,7 +273,11 @@ def front_run(
         env["REQUIRE_FULL_NODE"] = "1"
     env.update(extra_env or {})
     result = subprocess.run(
-        ["bash", str(ROOT / "tools/deploy/deepseek_v41/deploy_pd.sh"), action],
+        [
+            "bash",
+            str(ROOT / "tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh"),
+            action,
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -354,68 +341,15 @@ def test_front_plan_is_offline(tmp_path):
     assert "run_case_a" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "index,node,role",
-    [
-        (0, "192.0.2.1", "prefill"),
-        (1, "192.0.2.1", "prefill"),
-        (0, "192.0.2.2", "decode"),
-        (1, "192.0.2.3", "decode"),
-    ],
-)
-def test_full_node_pools_share_one_2p4d_gateway(tmp_path, index, node, role):
-    env = settings(tmp_path, "pd", "wheel", node)
-    env.update(
-        POOL_COUNT="2",
-        POOL_INDEX=str(index),
-        POOL_PORT_STRIDE="100",
-        DEVICES="0,1,2,3,4,5,6,7" if index == 0 else "8,9,10,11,12,13,14,15",
-    )
-    record = CONFIG.configure(env)
-    runtime = Path(env["PD_ROOT"]) / "runtime"
-    args = launch(tmp_path, runtime, "engine")
-    expected_rpc = (
-        9010
-        + index * 100
-        + (0 if role == "prefill" else (1 if node == "192.0.2.2" else 2))
-    )
-    assert args[args.index("--data-parallel-rpc-port") + 1] == str(expected_rpc)
-    assert record["worker_counts"] == {"prefill": 2, "decode": 4}
-    assert record["owns_gateway"] == (role == "prefill" and index == 0)
-    conf = (runtime / "supervisord.conf").read_text()
-    assert ("[program:tokenspeed-gateway]" in conf) == record["owns_gateway"]
-    gateway = launch(tmp_path, runtime, "gateway")
-    assert [gateway[i + 1] for i, x in enumerate(gateway) if x == "--prefill"] == [
-        "tcp://192.0.2.1:9010",
-        "tcp://192.0.2.1:9110",
-    ]
-    assert [gateway[i + 1] for i, x in enumerate(gateway) if x == "--decode"] == [
-        "tcp://192.0.2.1:9011",
-        "tcp://192.0.2.1:9012",
-        "tcp://192.0.2.1:9111",
-        "tcp://192.0.2.1:9112",
-    ]
-
-
 def test_default_front_uses_all_16_devices_and_starts_both_pools(tmp_path):
     result, calls = front_run(tmp_path, "start", pools=None)
     assert result.returncode == 0, result.stderr
     starts = [c for c in calls if c["kind"] == "ssh" and c["tokens"][-1] == "start"]
     assert len(starts) == 6
-    assert sum("POOL_INDEX=0" in c["tokens"] for c in starts) == 3
-    assert sum("POOL_INDEX=1" in c["tokens"] for c in starts) == 3
-    assert all(
-        "DEVICES=0,1,2,3,4,5,6,7" in c["tokens"]
-        for c in starts
-        if "POOL_INDEX=0" in c["tokens"]
-    )
-    assert all(
-        "DEVICES=8,9,10,11,12,13,14,15" in c["tokens"]
-        for c in starts
-        if "POOL_INDEX=1" in c["tokens"]
-    )
+    assert sum("DEVICES=0,1,2,3,4,5,6,7" in c["tokens"] for c in starts) == 3
+    assert sum("DEVICES=8,9,10,11,12,13,14,15" in c["tokens"] for c in starts) == 3
     smoke = [c for c in calls if c["kind"] == "ssh" and c["tokens"][-1] == "smoke"]
-    assert len(smoke) == 1 and "POOL_INDEX=0" in smoke[0]["tokens"]
+    assert len(smoke) == 1 and "INSTANCE_ID=p0" in smoke[0]["tokens"]
 
 
 def test_default_plan_assigns_all_six_instances(tmp_path):
@@ -428,7 +362,7 @@ def test_default_plan_assigns_all_six_instances(tmp_path):
 
 
 LAYOUT_SPEC = importlib.util.spec_from_file_location(
-    "dsv41_layout", ROOT / "tools/deploy/deepseek_v41/pd_layout.py"
+    "dsv41_layout", ROOT / "tools/deploy/deepseek_v41/deployment.py"
 )
 LAYOUT = importlib.util.module_from_spec(LAYOUT_SPEC)
 LAYOUT_SPEC.loader.exec_module(LAYOUT)
@@ -542,7 +476,7 @@ def test_flexible_renderer_registers_entire_layout_with_one_gateway(
     )
     # Run the real script so its sibling-module imports match deployment.
     subprocess.run(
-        ["python", str(ROOT / "tools/deploy/deepseek_v41/configure.py")],
+        ["python", str(ROOT / "tools/deploy/deepseek_v41/deployment.py"), "render"],
         env=dict(os.environ, **env),
         check=True,
     )
@@ -623,7 +557,7 @@ def test_prepare_refuses_changed_layout_before_start(tmp_path, changed):
         INSTANCE_ID="p0", DEVICES="0,1,2,3,4,5,6,7", LAYOUT_JSON=json.dumps(plan)
     )
     subprocess.run(
-        ["python", str(ROOT / "tools/deploy/deepseek_v41/configure.py")],
+        ["python", str(ROOT / "tools/deploy/deepseek_v41/deployment.py"), "render"],
         env=dict(os.environ, **env),
         check=True,
     )
@@ -635,7 +569,12 @@ def test_prepare_refuses_changed_layout_before_start(tmp_path, changed):
         )
     env.update(LAYOUT_JSON=json.dumps(plan), LAYOUT_FINGERPRINT=plan["fingerprint"])
     result = subprocess.run(
-        ["bash", str(ROOT / "tools/deploy/deepseek_v41/deploy_runtime.sh"), "prepare"],
+        [
+            "bash",
+            str(ROOT / "tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh"),
+            "--local",
+            "prepare",
+        ],
         env=dict(os.environ, **env),
         capture_output=True,
         text=True,
@@ -701,3 +640,84 @@ def test_key_mode_ignores_password_file(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert not any(c["tokens"] and c["tokens"][-1].endswith("/abc.txt") for c in calls)
+
+
+@pytest.mark.parametrize(
+    "mode,hosts,p,d,expected",
+    [
+        ("pd", "192.0.2.1 192.0.2.2 192.0.2.3", "2", "4", {"prefill": 2, "decode": 4}),
+        ("pd", "192.0.2.1", "1", "1", {"prefill": 1, "decode": 1}),
+        ("merged", "192.0.2.1", "0", "0", {"regular": 2}),
+    ],
+)
+def test_automatic_layout_uses_all_devices_and_correct_counts(
+    mode, hosts, p, d, expected
+):
+    plan = CONFIG.normalize(
+        dict(SERVING_MODE=mode, HOSTS=hosts, PREFILL_INSTANCES=p, DECODE_INSTANCES=d)
+    )
+    assert plan["worker_counts"] == expected
+    assert len(plan["instances"]) * 8 == len(hosts.split()) * 16
+
+
+@pytest.mark.parametrize(
+    "p,d", [("0", "6"), ("2", "3"), ("-1", "7"), ("9999999999999999999999999", "1")]
+)
+def test_invalid_automatic_counts_rejected_offline(tmp_path, p, d):
+    result, calls = front_run(
+        tmp_path,
+        "plan",
+        pools=None,
+        extra_env=dict(PREFILL_INSTANCES=p, DECODE_INSTANCES=d),
+    )
+    assert result.returncode != 0
+    assert not calls
+
+
+def test_single_entry_rejects_unknown_or_extra_arguments_without_ssh(tmp_path):
+    result, calls = front_run(tmp_path, "not-a-command")
+    assert result.returncode != 0 and not calls
+
+
+def test_legacy_topology_parameters_produce_migration_error():
+    with pytest.raises(ValueError, match="HOSTS"):
+        CONFIG.normalize(dict(SERVING_MODE="pd", DS_IPLIST="192.0.2.1"))
+
+
+def test_unified_publish_checks_hashes_and_refuses_overwrite(tmp_path):
+    import hashlib
+    import shutil
+
+    build = tmp_path / "build"
+    (build / "wheels").mkdir(parents=True)
+    (build / "wheels/dependency.whl").write_bytes(b"offline-package-fixture")
+    (build / "build-info.json").write_text(json.dumps(dict(release_id="test-release")))
+    for name in ["run_deepseek_v41_flash.sh", "deployment.py"]:
+        shutil.copy2(ROOT / "tools/deploy/deepseek_v41" / name, build / name)
+    (build / "DEPLOYMENT.md").write_text("Deployment guide\n")
+    release = tmp_path / "release"
+    env = dict(os.environ, BUILD_ROOT=str(build), RELEASE_ROOT=str(release))
+    command = [
+        "bash",
+        str(ROOT / "tools/deploy/deepseek_v41/run_deepseek_v41_flash.sh"),
+    ]
+    result = subprocess.run(
+        command + ["publish"], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((release / "manifest.json").read_text())
+    assert manifest["release_id"] == "test-release"
+    for entry in manifest["files"]:
+        assert (
+            hashlib.sha256((release / entry["path"]).read_bytes()).hexdigest()
+            == entry["sha256"]
+        )
+    result = subprocess.run(
+        command + ["publish"], env=env, capture_output=True, text=True
+    )
+    assert result.returncode != 0 and "禁止覆盖" in result.stderr
+    (release / "wheels/dependency.whl").write_bytes(b"corrupt")
+    result = subprocess.run(
+        command + ["check-release"], env=env, capture_output=True, text=True
+    )
+    assert result.returncode != 0 and "checksum mismatch" in result.stderr
