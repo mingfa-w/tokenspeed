@@ -4,12 +4,23 @@
 
 本方案适用于 TP8/EP8、eager、纯文本测试和开发。脚本依赖已准备好的基础运行环境与模型，不负责安装裸机系统。PD 是否提升吞吐，需要使用实际负载单独验证。
 
+## 先区分源码目录与部署目录
+
+Tokenspeed 源码仓库中没有预置的 `runtime/env.sh`。本文有两个**部署时生成**的环境文件：
+
+| 文件 | 何时生成 | 用途 |
+|---|---|---|
+| `$BASE_ROOT/runtime/env.sh` | 按“环境准备”步骤 3 的 `cat > ...` 命令创建 | 激活基础 venv，配置 CANN、驱动和 SHMEM |
+| `$PD_ROOT/runtime/env.sh` | 执行 `deploy_pd.sh install` 或首次 `up` 时自动生成 | 在基础环境上激活当前部署 venv，设置设备、模型和源码路径 |
+
+`TS_SRC` 是 Tokenspeed 源码目录；`BASE_ROOT` 和 `PD_ROOT` 是源码目录之外的部署目录。不要在 `$TS_SRC/runtime/` 中寻找这些文件。首次搭建从下文“环境准备”开始，完成步骤 3 后才能 `source "$BASE_ROOT/runtime/env.sh"`；执行部署安装后才能 `source "$PD_ROOT/runtime/env.sh"`。
+
 ## 环境准备
 
 每个节点需要 Linux x86_64、Python 3.11、八个空闲的 64 GiB 910B 设备、完整本地模型（包括 Engram 表和 tokenizer），以及已验证的 Ascend 基础运行环境。用 `BASE_ROOT` 指定该环境，其目录必须包含：
 
 - `venv`：按下文步骤创建，并安装或继承经过版本核对的 Torch/TorchNPU、Tokenspeed engine/kernel/scheduler、SMG、Supervisor 和 Ascend Mooncake。
-- `runtime/env.sh`：激活基础 venv，并设置 CANN、驱动和 SHMEM 动态库路径。
+- `runtime/env.sh`：在下文步骤 3 中创建，用于激活基础 venv，并设置 CANN、驱动和 SHMEM 动态库路径。
 - `runtime/guard/sitecustomize.py`：拦截旧算子库导入。
 - `env.sh` 引用的 SHMEM 库，以及匹配的 CANN 安装。
 
@@ -36,7 +47,7 @@
 
 不要只执行不带版本的 `pip install tokenspeed torch_npu mooncake`。同名包的最新版本不一定匹配本方案；尤其不能将 NPU Mooncake 替换为 CUDA 版本。
 
-若从已验收环境导出安装材料，在该环境上执行以下命令。`REFERENCE_ROOT` 是可访问的已验收环境目录，`BASE_ROOT` 是新建目录，不要指向正在运行的环境：
+若从已验收环境导出安装材料，在该环境上执行以下命令。`REFERENCE_ROOT` 是可访问的已验收部署目录（包含 venv 和 wheel），不是 Tokenspeed 源码目录。此段仅用于从参考环境导出材料；若已取得发布方提供的 `runtime/` 材料，复制到新 `$BASE_ROOT/runtime/` 后从步骤 2 开始。`BASE_ROOT` 是新建目录，不要指向正在运行的环境：
 
 ```bash
 export REFERENCE_ROOT=/path/to/validated-runtime
@@ -50,9 +61,12 @@ mkdir -p "$BASE_ROOT/runtime/wheels" "$BASE_ROOT/runtime/guard"
 cp -a "$REFERENCE_ROOT/runtime/wheels/." "$BASE_ROOT/runtime/wheels/"
 mkdir -p "$BASE_ROOT/runtime/shmem"
 cp -aL "$SHMEM_SDK/." "$BASE_ROOT/runtime/shmem/"
-# 读取 TorchNPU/native 包前，先加载参考环境的动态库设置。
-source "$REFERENCE_ROOT/runtime/env.sh"
-python - <<'PY'
+# 读取参考环境时使用其 Python 和动态库，不要求已有 runtime/env.sh。
+source "$CANN_SET_ENV"
+export REFERENCE_PYTHON="$REFERENCE_ROOT/venv/bin/python"
+REFERENCE_PYTHON_LIB="$("$REFERENCE_PYTHON" -c 'import sys; print(sys.base_prefix + "/lib")')"
+export LD_LIBRARY_PATH="$REFERENCE_PYTHON_LIB:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:/usr/local/Ascend/driver/lib64/driver:$REFERENCE_ROOT/runtime/shmem/lib:$REFERENCE_ROOT/runtime/shmem/lib64:${LD_LIBRARY_PATH:-}"
+"$REFERENCE_PYTHON" - <<'PY'
 import importlib.metadata as m
 import json
 import os
@@ -68,8 +82,8 @@ info = {"packages": {name: m.version(name) for name in names},
 Path(os.environ["BASE_ROOT"], "runtime/base-environment.json").write_text(
     json.dumps(info, indent=2) + "\n")
 PY
-python -m pip list --format=freeze > "$BASE_ROOT/runtime/reference-packages.txt"
-python -m pip check > "$BASE_ROOT/runtime/reference-pip-check.txt" 2>&1 || true
+"$REFERENCE_PYTHON" -m pip list --format=freeze > "$BASE_ROOT/runtime/reference-packages.txt"
+"$REFERENCE_PYTHON" -m pip check > "$BASE_ROOT/runtime/reference-pip-check.txt" 2>&1 || true
 ```
 
 材料导出只需在已验收环境上做一次。部署到新节点时，将导出的 `runtime/` 目录复制到该节点的 `$BASE_ROOT/runtime/`，重新设置 `BASE_ROOT`、`SYSTEM_PYTHON` 和 `CANN_SET_ENV`，再从步骤 2 开始；新节点不需要保留 `REFERENCE_ROOT`。
@@ -217,8 +231,9 @@ cat "$BASE_ROOT/runtime/base-pip-check.txt"
 在软件栈匹配的 Ascend 构建机上执行，依赖安装必须在 venv 中进行。只有 Python 改动时，可以复用已编译的 dav-2201 算子；需要重新编译 native 算子时，选择 `NATIVE_MODE=rebuild`，构建在独立暂存目录中进行。
 
 ```bash
-source /path/to/validated-runtime/runtime/env.sh
-export BASE_ROOT=/path/to/validated-runtime
+: "${BASE_ROOT:?请先完成上文环境准备并设置 BASE_ROOT}"
+test -f "$BASE_ROOT/runtime/env.sh"
+source "$BASE_ROOT/runtime/env.sh"
 export TS_SRC=/path/to/tokenspeed
 export UNI_SRC=/path/to/uni-ops
 export PLUGIN_SRC=/path/to/ts-plugin
