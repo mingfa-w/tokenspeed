@@ -36,8 +36,8 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 
 | Skill | 用途 | 仓库与分支 |
 |---|---|---|
-| `tokenspeed-deepseek-v41-deploy` | 环境准备、P/D分离或合并布局、wheel发布、启停、生成和逐rank KV传输验收 | [Tokenspeed](https://github.com/mingfa-w/tokenspeed/tree/uni-ops/dpk-flash-v41)，`uni-ops/dpk-flash-v41` |
-| `flash-npu-kernel-to-uni-ops` | Direct/CANN/Python算子迁移、接口兼容、Provider接入、数值及独立wheel验证 | [uni-ops](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/list)，`deepseek-v4.1-flash` |
+| [tokenspeed-deepseek-v41-deploy](https://github.com/mingfa-w/tokenspeed/blob/uni-ops/dpk-flash-v41/.agents/skills/tokenspeed-deepseek-v41-deploy/SKILL.md) | 环境准备、P/D分离或合并布局、wheel发布、启停、生成和逐rank KV传输验收 | [Tokenspeed](https://github.com/mingfa-w/tokenspeed/tree/uni-ops/dpk-flash-v41)，`uni-ops/dpk-flash-v41` |
+| [flash-npu-kernel-to-uni-ops](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/detail?path=.agents%2Fskills%2Fflash-npu-kernel-to-uni-ops%2FSKILL.md&branch=refs%2Fheads%2Fdeepseek-v4.1-flash) | Direct/CANN/Python算子迁移、接口兼容、Provider接入、数值及独立wheel验证 | [uni-ops](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/list)，`deepseek-v4.1-flash` |
 
 ### DeepSeek部署
 
@@ -54,7 +54,7 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 
 ### 算子迁移
 
-入口为uni-ops仓库的 `.agents/skills/flash-npu-kernel-to-uni-ops/SKILL.md`，开发环境完整路径为 `/home/mingfa/code/uni-ops/.agents/skills/flash-npu-kernel-to-uni-ops/SKILL.md`。
+入口：[flash-npu-kernel-to-uni-ops/SKILL.md](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/detail?path=.agents%2Fskills%2Fflash-npu-kernel-to-uni-ops%2FSKILL.md&branch=refs%2Fheads%2Fdeepseek-v4.1-flash)。仓库路径为 `.agents/skills/flash-npu-kernel-to-uni-ops/`，开发环境完整路径为 `/home/mingfa/code/uni-ops/.agents/skills/flash-npu-kernel-to-uni-ops/SKILL.md`。
 
 在uni-ops工作区调用，提供flash-npu-kernel源码路径、源版本、算子范围及验证设备。例如：
 
