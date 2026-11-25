@@ -30,6 +30,41 @@ registry-offlinebiz.sankuai.com/custom_prod/com.sankuai.data.hadoop.gpu/efficien
 
 开发节点为10.255.76.138、10.255.111.50、10.255.170.42，SSH端口8022。使用其他镜像时，按“环境准备”中的版本要求检查软件栈。
 
+## 开发辅助 Skills
+
+按任务选择对应skill：部署和服务管理使用Tokenspeed部署skill；底层算子移植使用uni-ops迁移skill。
+
+| Skill | 用途 | 仓库与分支 |
+|---|---|---|
+| `tokenspeed-deepseek-v41-deploy` | 环境准备、P/D分离或合并布局、wheel发布、启停、生成和逐rank KV传输验收 | [Tokenspeed](https://github.com/mingfa-w/tokenspeed/tree/uni-ops/dpk-flash-v41)，`uni-ops/dpk-flash-v41` |
+| `flash-npu-kernel-to-uni-ops` | Direct/CANN/Python算子迁移、接口兼容、Provider接入、数值及独立wheel验证 | [uni-ops](https://dev.sankuai.com/code/repo-detail/mptech-llmp/uni-ops/file/list)，`deepseek-v4.1-flash` |
+
+### DeepSeek部署
+
+入口：[tokenspeed-deepseek-v41-deploy/SKILL.md](https://github.com/mingfa-w/tokenspeed/blob/uni-ops/dpk-flash-v41/.agents/skills/tokenspeed-deepseek-v41-deploy/SKILL.md)。仓库路径为 `.agents/skills/tokenspeed-deepseek-v41-deploy/`，包含布局与发布、验收与排查两份参考文档。
+
+在Tokenspeed工作区调用，提供节点、运行标记、模型及环境路径。例如：
+
+```text
+使用 $tokenspeed-deepseek-v41-deploy，在指定的三台16卡910B上部署DeepSeek V4.1 Flash，
+配置2P4D，复用已有基础环境和wheel发布包，完成生成及逐rank KV传输验收。
+```
+
+管理现有服务时提供实际RUN_TAG及布局。环境检查、规划、部署和重启属于不同操作，按任务指定的范围执行。
+
+### 算子迁移
+
+入口为uni-ops仓库的 `.agents/skills/flash-npu-kernel-to-uni-ops/SKILL.md`，开发环境完整路径为 `/home/mingfa/code/uni-ops/.agents/skills/flash-npu-kernel-to-uni-ops/SKILL.md`。
+
+在uni-ops工作区调用，提供flash-npu-kernel源码路径、源版本、算子范围及验证设备。例如：
+
+```text
+使用 $flash-npu-kernel-to-uni-ops，将指定版本flash-npu-kernel中的算子迁移到uni-ops，
+参考mlp_sparse_lightning_indexer的接入方式，保留接口和原地修改语义，验证调度、数值和wheel独立运行。
+```
+
+迁移skill负责算子接入和验证；部署skill使用发布的uni-ops、ts-plugin依赖运行模型。两者的详细步骤以各自SKILL.md及其references目录为准。
+
 ## 开发环境与快速开始
 
 将以下文件放在同一目录，通过Shell入口执行部署命令：
