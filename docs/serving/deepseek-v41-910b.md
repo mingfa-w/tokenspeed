@@ -552,3 +552,7 @@ curl --noproxy '*' -N -sS http://10.255.76.138:8010/v1/chat/completions \
 source .venv/bin/activate
 python -m pytest -q test/cli/test_deepseek_v41_deployment.py
 ```
+
+## A2 算子管线与精度验证
+
+八类算子的运行时接口、启用设置、数值审计和稀疏 MLA 微基准见 [910B 算子管线](deepseek-v41-a2-kernels.md)。完整管线需配套升级 Tokenspeed、ts-plugin 和 uni-ops。

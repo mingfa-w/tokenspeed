@@ -98,6 +98,7 @@ from tokenspeed.runtime.layers.linear import ReplicatedLinear
 from tokenspeed.runtime.layers.quantization.base_config import QuantizationConfig
 from tokenspeed.runtime.layers.quantization.fp8 import Mxfp8Config
 from tokenspeed.runtime.model_loader.weight_utils import default_weight_loader
+from tokenspeed.runtime.models.deepseek_v41_execution import V41ExecutionOps
 from tokenspeed.runtime.utils import get_colorful_logger
 from tokenspeed.runtime.utils.env import global_server_args_dict
 
@@ -1070,6 +1071,7 @@ class DeepseekV41Engram(nn.Module):
         replicated and quantized through the existing linear implementation.
         """
         super().__init__()
+        self.execution_ops: V41ExecutionOps | None = None
         layout = EngramLayout.from_config(config)
         if config.hc_mult != 4:
             raise ValueError("V4.1 Engram requires four hyperconnection copies")
@@ -1207,6 +1209,10 @@ class DeepseekV41Engram(nn.Module):
             if hidden_states.numel() == 0:
                 return hidden_states
             kv, _ = self.wkv(embeddings, block_scale=None, output_dtype=None)
+        if self.execution_ops is not None:
+            return self.execution_ops.engram_gate(
+                hidden_states, kv, self.q_weight, self.k_weight, token_mask, self.eps
+            )
         if hidden_states.is_cuda:
             from tokenspeed_kernel.ops.residual import normalized_dot_gate
 

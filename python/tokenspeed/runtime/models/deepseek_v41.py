@@ -184,6 +184,7 @@ from tokenspeed.runtime.models.deepseek_v41_engram import (
     resolve_engram_host_alloc,
     resolve_engram_host_layout,
 )
+from tokenspeed.runtime.models.deepseek_v41_execution import V41ExecutionOps
 from tokenspeed.runtime.models.deepseek_v41_moe import DeepseekV4MoE
 from tokenspeed.runtime.models.deepseek_v41_vision import DeepseekV41Vision
 from tokenspeed.runtime.moe.expert_location import ModelConfigForExpertLocation
@@ -880,6 +881,7 @@ class DeepseekV41Indexer(nn.Module):
         self, config, mapping: Mapping, owns_k: bool, quant_config, prefix: str
     ):
         super().__init__()
+        self.execution_ops: V41ExecutionOps | None = None
         self.n_local_heads = config.index_n_heads
         self.head_dim = config.index_head_dim
         self.scale = self.head_dim**-0.5 * config.index_n_heads**-0.5
@@ -923,6 +925,10 @@ class DeepseekV41Indexer(nn.Module):
         rotary: DeepseekV41RotaryEmbedding,
     ) -> tuple[torch.Tensor | IndexQueryInput, torch.Tensor]:
         """qr is BF16, or E4M3 codes with their group-32 qr_scale."""
+        if self.execution_ops is not None:
+            return self.execution_ops.indexer_qw(
+                self, x, qr, qr_scale, positions, rotary
+            )
         q, _ = self.wq_b(
             qr,
             block_scale=qr_scale,
@@ -967,6 +973,8 @@ class DeepseekV41Indexer(nn.Module):
     ) -> torch.Tensor | IndexKeyInput:
         if self.wk is None:
             raise RuntimeError("Only a KV owner can project index keys")
+        if self.execution_ops is not None:
+            return self.execution_ops.indexer_k(self, latent, positions, rotary)
         key, _ = self.wk(latent, block_scale=None, output_dtype=None)
         if (
             key.is_cuda
@@ -1030,6 +1038,7 @@ class DeepseekV41Attention(nn.Module):
         aux_stream: torch.cuda.Stream | None,
     ):
         super().__init__()
+        self.execution_ops: V41ExecutionOps | None = None
         self.stream_fork = StreamFork(aux_stream)
         self.layer_id = layer_id
         self.ced_decoder_start = ced_decoder_start
@@ -1449,41 +1458,52 @@ class DeepseekV41Attention(nn.Module):
                 key_rows=source_gather,
             )
             return hidden_states[:0]
-        if hidden_states.shape[0]:
-            qkv, _ = self.wq_a_wkv(
-                hidden_states if hidden_codes is None else hidden_codes,
-                block_scale=hidden_scales,
-                output_dtype=None if hidden_codes is None else hidden_states.dtype,
+        prepared_q = None
+        if self.execution_ops is not None:
+            if hidden_codes is not None or hidden_scales is not None:
+                raise ValueError(
+                    "The selected V4.1 execution backend requires BF16 activations"
+                )
+            qr, swa, prepared_q = self.execution_ops.attn_prologue(
+                self, hidden_states, positions
             )
+            q_input, q_scale = qr, None
         else:
-            qkv = hidden_states.new_empty(
-                (0, self.q_norm.weight.numel() + self.head_dim)
-            )
-        qr, swa = qkv.split((self.q_norm.weight.numel(), self.head_dim), dim=-1)
-        if (
-            qr.shape[0] > 0
-            and qr.is_cuda
-            and qr.dtype == torch.bfloat16
-            and (
-                current_platform().is_nvidia
-                or current_platform().is_cdna4
-                or current_platform().is_cdna5
-            )
-            and isinstance(self.wq_b.quant_method, _ReferenceFp8LinearMethod)
-        ):
-            # Write the scales in a layout every projection sharing them reads
-            # as given. Narrowing forces canonical: only it selects by row.
-            qr, q_input, q_scale = rmsnorm_quantize_fp8_group32(
-                qr,
-                self.q_norm.weight,
-                self.q_norm.variance_epsilon,
-                scale_layout=self._q_scale_layout(rows, fused_decode),
-                override=None,
-                solution="triton",
-            )
-        else:
-            qr = q_input = _attention_norm(qr, self.q_norm) if qr.shape[0] else qr
-            q_scale = None
+            if hidden_states.shape[0]:
+                qkv, _ = self.wq_a_wkv(
+                    hidden_states if hidden_codes is None else hidden_codes,
+                    block_scale=hidden_scales,
+                    output_dtype=None if hidden_codes is None else hidden_states.dtype,
+                )
+            else:
+                qkv = hidden_states.new_empty(
+                    (0, self.q_norm.weight.numel() + self.head_dim)
+                )
+            qr, swa = qkv.split((self.q_norm.weight.numel(), self.head_dim), dim=-1)
+            if (
+                qr.shape[0] > 0
+                and qr.is_cuda
+                and qr.dtype == torch.bfloat16
+                and (
+                    current_platform().is_nvidia
+                    or current_platform().is_cdna4
+                    or current_platform().is_cdna5
+                )
+                and isinstance(self.wq_b.quant_method, _ReferenceFp8LinearMethod)
+            ):
+                # Write the scales in a layout every projection sharing them reads
+                # as given. Narrowing forces canonical: only it selects by row.
+                qr, q_input, q_scale = rmsnorm_quantize_fp8_group32(
+                    qr,
+                    self.q_norm.weight,
+                    self.q_norm.variance_epsilon,
+                    scale_layout=self._q_scale_layout(rows, fused_decode),
+                    override=None,
+                    solution="triton",
+                )
+            else:
+                qr = q_input = _attention_norm(qr, self.q_norm) if qr.shape[0] else qr
+                q_scale = None
         index_q_input, index_q_scale = qr, None
         if (
             q_scale is not None
@@ -1535,6 +1555,8 @@ class DeepseekV41Attention(nn.Module):
                     hidden_states, qr, swa = (
                         t.index_select(0, keep) for t in (hidden_states, qr, swa)
                     )
+                    if prepared_q is not None:
+                        prepared_q = prepared_q.index_select(0, keep)
                     if q_scale is not None:
                         q_input = q_input.index_select(0, keep)
                         q_scale = q_scale.index_select(0, keep)
@@ -1628,52 +1650,59 @@ class DeepseekV41Attention(nn.Module):
                             projected_partition=partition,
                         )
                         index_q = index_weights = None
-            if q_input.shape[0]:
-                if (
-                    fused_decode
-                    and q_scale is not None
-                    and q_scale.dtype == torch.int32
-                ):
-                    q = fp8_projection(
-                        q_input,
-                        q_scale,
-                        self.fused_q_weight,
-                        self.fused_q_projection_scales,
-                        None,
-                    )
-                elif fused_decode:
-                    q = mm(
-                        q_input,
-                        self.fused_q_weight,
-                        A_scales=q_scale,
-                        B_scales=self.fused_q_scales,
-                        out_dtype=qr.dtype,
-                        quant="mxfp8",
-                        block_size=[1, 32],
-                        prepacked_scales=True,
-                    )
-                else:
-                    q, _ = self.wq_b(
-                        q_input,
-                        block_scale=q_scale,
-                        output_dtype=qr.dtype if q_scale is not None else None,
-                    )
+            if prepared_q is not None:
+                q = prepared_q
             else:
-                q = qr.new_empty((0, self.n_local_heads * self.head_dim))
-            q = q.unflatten(-1, (self.n_local_heads, self.head_dim))
-            if (
-                not fused_decode
-                and q.is_cuda
-                and mode.is_decode()
-                and self.head_dim == 512
-                and self.n_local_heads != self.n_kernel_heads
-            ):
-                q = rope_pad_query(q, positions, self.rotary_emb.cos_sin_cache, None)
-            elif not fused_decode and q.shape[0]:
-                q = self.rotary_emb.apply_owned(q, positions, False)
+                if q_input.shape[0]:
+                    if (
+                        fused_decode
+                        and q_scale is not None
+                        and q_scale.dtype == torch.int32
+                    ):
+                        q = fp8_projection(
+                            q_input,
+                            q_scale,
+                            self.fused_q_weight,
+                            self.fused_q_projection_scales,
+                            None,
+                        )
+                    elif fused_decode:
+                        q = mm(
+                            q_input,
+                            self.fused_q_weight,
+                            A_scales=q_scale,
+                            B_scales=self.fused_q_scales,
+                            out_dtype=qr.dtype,
+                            quant="mxfp8",
+                            block_size=[1, 32],
+                            prepacked_scales=True,
+                        )
+                    else:
+                        q, _ = self.wq_b(
+                            q_input,
+                            block_scale=q_scale,
+                            output_dtype=qr.dtype if q_scale is not None else None,
+                        )
+                else:
+                    q = qr.new_empty((0, self.n_local_heads * self.head_dim))
+                q = q.unflatten(-1, (self.n_local_heads, self.head_dim))
+                if (
+                    not fused_decode
+                    and q.is_cuda
+                    and mode.is_decode()
+                    and self.head_dim == 512
+                    and self.n_local_heads != self.n_kernel_heads
+                ):
+                    q = rope_pad_query(
+                        q, positions, self.rotary_emb.cos_sin_cache, None
+                    )
+                elif not fused_decode and q.shape[0]:
+                    q = self.rotary_emb.apply_owned(q, positions, False)
             swa_rope_cache = None
             swa_norm_weight = None
-            if swa.is_cuda and self.head_dim == 512 and self.rotary_emb.dim == 64:
+            if self.execution_ops is not None:
+                pass  # The execution backend already normalized and rotated SWA.
+            elif swa.is_cuda and self.head_dim == 512 and self.rotary_emb.dim == 64:
                 self.rotary_emb._prepare_cache(swa.device)
                 swa_rope_cache = self.rotary_emb.cos_sin_cache
                 if (
@@ -1744,41 +1773,50 @@ class DeepseekV41Attention(nn.Module):
                 self.mapping.attn.head_tp_group,
             )
         method = self.wo_b.quant_method
-        if self.wo_a_fp8:
-            # One kernel undoes RoPE and casts every 32 channels to FP8, as the
-            # reference rounds o before wo_a. Only CDNA attention rotates back
-            # itself, and no grouped FP8 kernel serves CDNA.
-            if not fused_decode:
-                codes, scales = self.rotary_emb.inverse_quantize_grouped(
-                    out, positions, self.n_local_groups
-                )
-            if self.wo_b_fp8:
-                # wo_a writes wo_b's FP8 input and scales; nothing quantizes between.
-                codes, scales = grouped_fp8_projection_quantize_fp8(
-                    codes, scales, weight, weight_scales
-                )
-                out = fp8_projection(
-                    codes, scales, self.wo_b.weight, self.wo_b_scales, target
-                )
-            else:
-                out = grouped_fp8_projection(codes, scales, weight, weight_scales, None)
-                out, _ = self.wo_b(out.flatten(1), scale=None, out=target)
+        if self.execution_ops is not None:
+            out = self.execution_ops.attn_epilogue(self, out, positions, target)
         else:
-            if out_rope_cache is None:
-                out = self.rotary_emb.apply_owned(out, positions, True)
-            grouped = out.reshape(out.shape[0], self.n_local_groups, -1)
-            if (
-                grouped.is_cuda
-                and (current_platform().is_cdna4 or current_platform().is_cdna5)
-                and isinstance(method, _ReferenceFp8LinearMethod)
-                and method.prepared_weight_scales is None
-            ):
-                # wo_b's group-32 activation quantization runs in wo_a's epilogue.
-                codes, scales = grouped_bf16_projection_quantize_fp8(grouped, weight)
-                out, _ = self.wo_b(codes, scale=scales, out=target)
+            if self.wo_a_fp8:
+                # One kernel undoes RoPE and casts every 32 channels to FP8, as the
+                # reference rounds o before wo_a. Only CDNA attention rotates back
+                # itself, and no grouped FP8 kernel serves CDNA.
+                if not fused_decode:
+                    codes, scales = self.rotary_emb.inverse_quantize_grouped(
+                        out, positions, self.n_local_groups
+                    )
+                if self.wo_b_fp8:
+                    # wo_a writes wo_b's FP8 input and scales; nothing quantizes between.
+                    codes, scales = grouped_fp8_projection_quantize_fp8(
+                        codes, scales, weight, weight_scales
+                    )
+                    out = fp8_projection(
+                        codes, scales, self.wo_b.weight, self.wo_b_scales, target
+                    )
+                else:
+                    out = grouped_fp8_projection(
+                        codes, scales, weight, weight_scales, None
+                    )
+                    out, _ = self.wo_b(out.flatten(1), scale=None, out=target)
             else:
-                out = grouped_bf16_projection(grouped, weight, None, None).flatten(1)
-                out, _ = self.wo_b(out, scale=None, out=target)
+                if out_rope_cache is None:
+                    out = self.rotary_emb.apply_owned(out, positions, True)
+                grouped = out.reshape(out.shape[0], self.n_local_groups, -1)
+                if (
+                    grouped.is_cuda
+                    and (current_platform().is_cdna4 or current_platform().is_cdna5)
+                    and isinstance(method, _ReferenceFp8LinearMethod)
+                    and method.prepared_weight_scales is None
+                ):
+                    # wo_b's group-32 activation quantization runs in wo_a's epilogue.
+                    codes, scales = grouped_bf16_projection_quantize_fp8(
+                        grouped, weight
+                    )
+                    out, _ = self.wo_b(codes, scale=scales, out=target)
+                else:
+                    out = grouped_bf16_projection(grouped, weight, None, None).flatten(
+                        1
+                    )
+                    out, _ = self.wo_b(out, scale=None, out=target)
         if self.mapping.attn.head_tp_size > 1 and reduce_output:
             out = all_reduce(
                 out,

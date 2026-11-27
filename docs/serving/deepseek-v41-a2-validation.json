@@ -1,0 +1,296 @@
+{
+  "endpoint": "http://127.0.0.1:8020",
+  "layout": "TP8/EP8/PP1, physical NPU0-7, merged",
+  "model_config": "max_model_len=512,max_num_seqs=1,index_topk=512,candidate_topk_blocks=2048",
+  "generation_cases": [
+    {
+      "case": "math",
+      "text": "391",
+      "reference_text": "391",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 15,
+        "completion_tokens": 2,
+        "total_tokens": 17,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "请只回答数字：17乘以23等于多少？"
+    },
+    {
+      "case": "python",
+      "text": "1024",
+      "reference_text": "1024",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 26,
+        "completion_tokens": 3,
+        "total_tokens": 29,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "只回答运行结果，不要解释：Python 中 print(2 ** 10) 输出什么？"
+    },
+    {
+      "case": "extract",
+      "text": "728491",
+      "reference_text": "728491",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 31,
+        "completion_tokens": 3,
+        "total_tokens": 34,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "从记录中提取订单号，只输出订单号：客户张三，订单号728491，金额128元，城市北京。"
+    },
+    {
+      "case": "json",
+      "text": "true",
+      "reference_text": "true",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 21,
+        "completion_tokens": 2,
+        "total_tokens": 23,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "将布尔值“真”写成JSON字面量，只输出一个单词。"
+    },
+    {
+      "case": "long-recall",
+      "text": "5937",
+      "reference_text": "5937",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 384,
+        "completion_tokens": 3,
+        "total_tokens": 387,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "阅读材料，最后只回答标记值。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。编号甲对应普通记录；编号乙对应待办记录。标记值为5937。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。本段是无关备注，请继续保留前述标记。问题：标记值是多少？只输出数字。"
+    },
+    {
+      "case": "english",
+      "text": "Apple",
+      "reference_text": "Apple",
+      "exact": true,
+      "usage": {
+        "prompt_tokens": 16,
+        "completion_tokens": 2,
+        "total_tokens": 18,
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "audio_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "audio_tokens": 0,
+          "accepted_prediction_tokens": 0,
+          "rejected_prediction_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "prompt": "Translate 苹果 into English. Output only the English word."
+    }
+  ],
+  "families": {
+    "sparse_mla": {
+      "calls": 7360,
+      "passed": true,
+      "max_abs": 0.015625,
+      "max_nrmse": 0.000403046385167893,
+      "shapes": [
+        [
+          1,
+          8,
+          512
+        ],
+        [
+          15,
+          8,
+          512
+        ],
+        [
+          16,
+          8,
+          512
+        ],
+        [
+          21,
+          8,
+          512
+        ],
+        [
+          26,
+          8,
+          512
+        ],
+        [
+          31,
+          8,
+          512
+        ],
+        [
+          128,
+          8,
+          512
+        ],
+        [
+          384,
+          8,
+          512
+        ],
+        [
+          512,
+          8,
+          512
+        ]
+      ]
+    },
+    "attn_prologue": {
+      "calls": 4096,
+      "passed": true,
+      "max_abs": 0.0625,
+      "max_nrmse": 0.0006978106864280013
+    },
+    "attn_epilogue": {
+      "calls": 4096,
+      "passed": true,
+      "max_abs": 0.03125,
+      "max_nrmse": 0.001101889209207803
+    },
+    "engram_gate": {
+      "calls": 368,
+      "passed": true,
+      "max_abs": 0.00390625,
+      "max_nrmse": 1.723632841339416e-05
+    },
+    "indexer_prologue_k": {
+      "calls": 736,
+      "passed": true,
+      "max_abs": 0.001953125,
+      "max_nrmse": 2.111980370232067e-05
+    },
+    "indexer_prologue_qw": {
+      "calls": 1024,
+      "passed": true,
+      "max_abs": 0.0,
+      "max_nrmse": 0.0
+    },
+    "quant_lightning_indexer": {
+      "calls": 512,
+      "passed": true,
+      "nonempty_calls": 480,
+      "max_visible": 387
+    },
+    "quant_sparse_lightning_indexer": {
+      "calls": 512,
+      "passed": true,
+      "nonempty_calls": 480,
+      "max_visible": 387
+    }
+  },
+  "wheels": {
+    "tokenspeed-0.1.1-py3-none-any.whl": "7c4d329dc6152563ed8e199c6d2f6eba0d552a6116cde01a6678c99783752eff",
+    "tokenspeed_longcat-0.1.0-py3-none-any.whl": "49a77db4410319d4f7730932e37ebe907aa7854032537be6398239bb8dc08efa",
+    "mt_uni_ops-0.1.0-cp311-cp311-linux_x86_64.whl": "2a166509cd78a56aef0825fe2123fdc347621c6b795c9a2d529749d000356d15"
+  },
+  "scope": "Numerical and six-prompt functional regression; no MMLU/C-Eval, long-context quality, concurrency or PD rollout claim. Audit counts include warmup.",
+  "tests": {
+    "wheel_independent_passed": 67,
+    "host_engram_passed": 38,
+    "host_engram_skipped": 14
+  },
+  "indexer_score_validation": [
+    {
+      "weight_dtype": "torch.bfloat16",
+      "shards": 1,
+      "exact": true
+    },
+    {
+      "weight_dtype": "torch.bfloat16",
+      "shards": 8,
+      "exact": true
+    },
+    {
+      "weight_dtype": "torch.float32",
+      "shards": 1,
+      "exact": true
+    },
+    {
+      "weight_dtype": "torch.float32",
+      "shards": 8,
+      "exact": true
+    }
+  ],
+  "postinstall_smoke": [
+    {
+      "case": "math",
+      "text": "391",
+      "exact": true
+    },
+    {
+      "case": "english",
+      "text": "Apple",
+      "exact": true
+    }
+  ],
+  "service_ready": true,
+  "runtime_audit_enabled": false,
+  "source_provenance": "Recorded wheels were built from the development worktree; use wheel SHA256 for binary provenance and this change for sources.",
+  "source_regression": {
+    "passed": 127,
+    "npu_cases": 121,
+    "cpu_cases": 6,
+    "optional_tilelang_cases_not_run": 2
+  }
+}
